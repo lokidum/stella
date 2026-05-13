@@ -206,7 +206,9 @@ function HomeScreen({ variant, name, status, setStatus, perms, geo, onNav, onAR,
 
         <button className="tile tile-map" onClick={() => onNav("map")}>
           <div className="tile-art">
-            <div className="map-mini" />
+            <div className="icon-art" style={{ background: "rgba(255,255,255,0.7)" }}>
+              <IcMapPin stroke="#3a7d6a" />
+            </div>
           </div>
           <div className="tile-title">Quiet map</div>
           <div className="tile-sub">Where the calm corners are</div>
@@ -228,8 +230,8 @@ function HomeScreen({ variant, name, status, setStatus, perms, geo, onNav, onAR,
               <IcMsg stroke="#5a4ba8" />
             </div>
           </div>
-          <div className="tile-title">Chat with Stella</div>
-          <div className="tile-sub">Just to talk</div>
+          <div className="tile-title">Conversations</div>
+          <div className="tile-sub">Old link-ups · no number needed</div>
         </button>
       </div>
     </div>
@@ -684,109 +686,228 @@ function FindUsersScreen({ variant, perms, setPerm, onBack, onChat }) {
   );
 }
 
-/* ----------------------- Chat with Stella ----------------------- */
-const CHAT_SUGGESTIONS = [
-  "I'm nervous about tomorrow",
-  "Tell me something soft",
-  "I feel invisible today",
-  "How do I start a conversation",
-  "I want to leave the lecture",
+/* ----------------------- Conversations (link-ups with past Stella friends) ----------------------- */
+
+// Mock conversation seed: people you waved at through Stella but never grabbed
+// numbers from. The threads pick up where you left off. Persisted to localStorage
+// once first opened so new messages stick across sessions.
+const CONVERSATIONS_SEED = [
+  {
+    id: "sam",
+    name: "Sam",
+    variant: "blob",
+    where: "Library cafe, Tuesday",
+    online: true,
+    messages: [
+      { from: "them", text: "hey thanks for waving back the other day :)", t: -2 * 24 * 60 * 60 * 1000 },
+      { from: "you", text: "thanks for not making it weird", t: -2 * 24 * 60 * 60 * 1000 + 6 * 60 * 1000 },
+      { from: "them", text: "literally been hoping someone else would. you free thursday for cafe again?", t: -1 * 24 * 60 * 60 * 1000 },
+    ],
+  },
+  {
+    id: "priya",
+    name: "Priya",
+    variant: "bear",
+    where: "INB101, yesterday",
+    online: false,
+    messages: [
+      { from: "them", text: "did you finish the inb101 reading?", t: -1 * 24 * 60 * 60 * 1000 },
+      { from: "you", text: "almost. p46 onwards is dense", t: -1 * 24 * 60 * 60 * 1000 + 8 * 60 * 1000 },
+      { from: "them", text: "right?? coffee + chapter 4 tomorrow if you're up", t: -1 * 24 * 60 * 60 * 1000 + 12 * 60 * 1000 },
+      { from: "you", text: "yes please", t: -1 * 24 * 60 * 60 * 1000 + 14 * 60 * 1000 },
+      { from: "them", text: "🫧", t: -22 * 60 * 60 * 1000 },
+    ],
+  },
+  {
+    id: "jay",
+    name: "Jay",
+    variant: "ghost",
+    where: "P-block courtyard, 4 days ago",
+    online: false,
+    messages: [
+      { from: "them", text: "i think i saw your stella by the jacaranda", t: -4 * 24 * 60 * 60 * 1000 },
+      { from: "you", text: "yeah she likes it there", t: -4 * 24 * 60 * 60 * 1000 + 5 * 60 * 1000 },
+      { from: "them", text: "small wave", t: -4 * 24 * 60 * 60 * 1000 + 11 * 60 * 1000 },
+      { from: "you", text: "small wave back", t: -4 * 24 * 60 * 60 * 1000 + 12 * 60 * 1000 },
+    ],
+  },
+  {
+    id: "quiet",
+    name: "Ren",
+    variant: "blob",
+    where: "Old Government House lawn, last week",
+    online: false,
+    messages: [
+      { from: "them", text: "🫧", t: -6 * 24 * 60 * 60 * 1000 },
+      { from: "you", text: "🫧", t: -6 * 24 * 60 * 60 * 1000 + 14 * 60 * 1000 },
+    ],
+  },
 ];
 
-function ChatScreen({ variant, name, onBack, apiKey }) {
-  const [messages, setMessages] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem("stella.chat") || "null");
-      if (saved && Array.isArray(saved) && saved.length) return saved;
-    } catch {}
-    return [
-      { role: "assistant", content: `Hi ${name}. No rush. Want to tell me something small, or sit here a moment?` },
-    ];
-  });
+// Friend reply pools — used to mock a reply 1.5s after the user sends.
+const REPLY_POOL = {
+  sam: ["sounds good", "yeah :)", "for sure", "thursday's still on", "see you there"],
+  priya: ["okay! 📚", "yes please", "ill bring the coffee", "🫧", "same time same place?"],
+  jay: ["nice", "🫧", "okay", "soft wave", "i'll be around"],
+  quiet: ["🫧", "🌙", "...", "🫧🫧"],
+};
+
+function formatTimeAgo(ts) {
+  const now = Date.now();
+  const diff = now - (now + ts); // ts is negative offset from now
+  // ts stored as negative offsets from "now-on-load"; convert to absolute ago
+  const ago = -ts;
+  const s = Math.floor(ago / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? "yesterday" : `${d}d`;
+}
+
+function loadConversations() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("stella.conversations") || "null");
+    if (saved && Array.isArray(saved) && saved.length) return saved;
+  } catch {}
+  return CONVERSATIONS_SEED;
+}
+
+function ChatScreen({ name, onBack }) {
+  const [conversations, setConversations] = useState(() => loadConversations());
+  const [openId, setOpenId] = useState(null);
   const [input, setInput] = useState("");
-  const [pending, setPending] = useState(false);
+  const [typingId, setTypingId] = useState(null);
   const threadRef = useRef(null);
 
   useEffect(() => {
-    localStorage.setItem("stella.chat", JSON.stringify(messages));
-    // scroll to bottom
+    try { localStorage.setItem("stella.conversations", JSON.stringify(conversations)); } catch {}
+  }, [conversations]);
+
+  useEffect(() => {
     const el = threadRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, pending]);
+  }, [openId, typingId, conversations]);
 
-  const send = async (text) => {
-    const t = (text ?? input).trim();
-    if (!t || pending) return;
+  const openThread = useCallback((id) => { setOpenId(id); setInput(""); }, []);
+  const closeThread = useCallback(() => { setOpenId(null); setInput(""); }, []);
+
+  const sendMessage = useCallback(() => {
+    const text = input.trim();
+    if (!text || !openId) return;
     setInput("");
-    const next = [...messages, { role: "user", content: t }];
-    setMessages(next);
-    setPending(true);
-    try {
-      const { text: reply } = await chatStella(next, apiKey);
-      setMessages((m) => [...m, { role: "assistant", content: reply }]);
-    } catch (e) {
-      setMessages((m) => [...m, { role: "assistant", content: "I'm here. Want to try that again in a moment?" }]);
-    } finally {
-      setPending(false);
-    }
-  };
+    setConversations((prev) =>
+      prev.map((c) => c.id === openId
+        ? { ...c, messages: [...c.messages, { from: "you", text, t: -Date.now() + Date.now() }] }
+        : c
+      )
+    );
+    // Mock a reply
+    setTypingId(openId);
+    const id = openId;
+    setTimeout(() => {
+      setTypingId(null);
+      const pool = REPLY_POOL[id] || ["🫧"];
+      const reply = pool[Math.floor(Math.random() * pool.length)];
+      setConversations((prev) =>
+        prev.map((c) => c.id === id
+          ? { ...c, messages: [...c.messages, { from: "them", text: reply, t: 0 }] }
+          : c
+        )
+      );
+    }, 1400 + Math.random() * 800);
+  }, [input, openId]);
 
+  const sel = conversations.find((c) => c.id === openId);
+
+  // ----- Thread view -----
+  if (sel) {
+    return (
+      <div className="screen chat" data-screen-label="07 Conversation">
+        <div className="s-header">
+          <button className="icon-btn" onClick={closeThread} aria-label="Back">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{width: 18, height: 18}}><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+          </button>
+          <h2 className="s-title">{sel.name}</h2>
+          <div style={{ width: 36 }} />
+        </div>
+
+        <div className="chat-stella-banner">
+          <StellaMini variant={sel.variant} size={28} />
+          <span className="dot" style={{ background: sel.online ? "#5cd9a3" : "#b6b6c8" }} />
+          {sel.online ? "online now" : sel.where}
+        </div>
+
+        <div className="chat-thread" ref={threadRef}>
+          {sel.messages.map((m, i) => (
+            <div key={i} className={`bubble ${m.from === "you" ? "you" : "stella"}`}>
+              {m.text}
+            </div>
+          ))}
+          {typingId === sel.id && (
+            <div className="bubble stella typing">
+              <span className="d" /><span className="d" /><span className="d" />
+            </div>
+          )}
+        </div>
+
+        <form
+          className="chat-input-row"
+          onSubmit={(e) => { e.preventDefault(); sendMessage(); }}
+        >
+          <input
+            type="text"
+            placeholder={`Message ${sel.name}…`}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+          />
+          <button className="send" type="submit" disabled={!input.trim()} aria-label="Send">
+            <IcSend />
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  // ----- List view -----
   return (
-    <div className="screen chat" data-screen-label="07 Chat with Stella">
+    <div className="screen chat" data-screen-label="07 Conversations">
       <div className="s-header">
         <button className="icon-btn" onClick={onBack} aria-label="Back">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{width: 18, height: 18}}><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
-        <h2 className="s-title">Stella</h2>
-        <button className="icon-btn" onClick={() => { setMessages([{ role: "assistant", content: "Fresh start. What's on your mind?" }]); localStorage.removeItem("stella.chat"); }} aria-label="Clear chat">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{width: 18, height: 18}}>
-            <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
-          </svg>
-        </button>
+        <h2 className="s-title">Conversations</h2>
+        <div style={{ width: 36 }} />
       </div>
 
-      <div className="chat-stella-banner">
-        <StellaMini variant={variant} size={28} />
-        <span className="dot" />
-        Stella is here, quietly
+      <div className="conv-sub">
+        Old link-ups. No numbers swapped — just Stella waves you kept going.
       </div>
 
-      <div className="chat-thread" ref={threadRef}>
-        {messages.map((m, i) => (
-          <div key={i} className={`bubble ${m.role === "user" ? "you" : "stella"}`}>
-            {m.content}
-          </div>
-        ))}
-        {pending && (
-          <div className="bubble stella typing">
-            <span className="d" /><span className="d" /><span className="d" />
-          </div>
-        )}
+      <div className="conv-list">
+        {conversations.map((c) => {
+          const last = c.messages[c.messages.length - 1];
+          const preview = last ? (last.from === "you" ? `you · ${last.text}` : last.text) : "";
+          return (
+            <button key={c.id} className="conv-card" onClick={() => openThread(c.id)}>
+              <div className="conv-avatar">
+                <StellaMini variant={c.variant} size={44} />
+                {c.online && <span className="conv-online" />}
+              </div>
+              <div className="conv-body">
+                <div className="conv-row">
+                  <span className="conv-name">{c.name}</span>
+                  <span className="conv-time">{formatTimeAgo(last?.t || 0)}</span>
+                </div>
+                <div className="conv-preview">{preview}</div>
+                <div className="conv-where">{c.where}</div>
+              </div>
+            </button>
+          );
+        })}
       </div>
-
-      {messages.length <= 1 && (
-        <div className="chat-suggestions">
-          {CHAT_SUGGESTIONS.map((s) => (
-            <button key={s} className="chat-chip" onClick={() => send(s)}>{s}</button>
-          ))}
-        </div>
-      )}
-
-      <form
-        className="chat-input-row"
-        onSubmit={(e) => { e.preventDefault(); send(); }}
-      >
-        <input
-          type="text"
-          placeholder="Say something to Stella..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={pending}
-        />
-        <button className="send" type="submit" disabled={!input.trim() || pending} aria-label="Send">
-          <IcSend />
-        </button>
-      </form>
     </div>
   );
 }

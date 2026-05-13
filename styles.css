@@ -2347,6 +2347,101 @@ button {
   box-shadow: var(--shadow-soft);
 }
 
+/* ---------- Conversations list (Old Stella friend link-ups) ---------- */
+.conv-sub {
+  padding: 0 22px 8px;
+  font-family: "Imprima", sans-serif;
+  font-size: 12px;
+  color: var(--navy);
+  opacity: 0.65;
+  line-height: 1.45;
+}
+.conv-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.conv-card {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  text-align: left;
+  width: 100%;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.conv-card:active { transform: scale(0.985); }
+.conv-card:hover { background: rgba(255, 255, 255, 0.92); }
+.conv-avatar {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  background: rgba(208, 248, 255, 0.7);
+  border-radius: 50%;
+}
+.conv-online {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #5cd9a3;
+  border: 2px solid #fff;
+  box-shadow: 0 0 6px #5cd9a3;
+}
+.conv-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.conv-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.conv-name {
+  font-family: "Indie Flower", cursive;
+  font-size: 19px;
+  color: var(--navy);
+}
+.conv-time {
+  font-family: "Imprima", sans-serif;
+  font-size: 11px;
+  color: var(--navy);
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+.conv-preview {
+  font-family: "Imprima", sans-serif;
+  font-size: 13px;
+  color: var(--navy);
+  opacity: 0.78;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-where {
+  font-family: "Imprima", sans-serif;
+  font-size: 11px;
+  color: var(--navy);
+  opacity: 0.5;
+  font-style: italic;
+  margin-top: 1px;
+}
+
 /* ---------- AR debug pill (opt-in via ?debug=1) ---------- */
 .ar-debug-pill {
   position: absolute;
