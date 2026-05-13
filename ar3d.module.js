@@ -17,8 +17,9 @@ import { createElement, useRef, useEffect, useState, useMemo, useCallback, Suspe
 import { createRoot } from "react-dom/client";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Billboard, ContactShadows, Html } from "@react-three/drei";
+import { Billboard, ContactShadows, Html, Trail } from "@react-three/drei";
 import { FilesetResolver, PoseLandmarker, FaceLandmarker } from "@mediapipe/tasks-vision";
+import { GLTFLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
 import htm from "htm";
 
 const html = htm.bind(createElement);
@@ -37,7 +38,6 @@ function effectivePixels() {
   return window.innerWidth * window.innerHeight * dpr;
 }
 function shouldUsePostFX() {
-  // Drop post-fx on iOS < 17 (VideoTexture quirks) and on low-effective-pixel devices.
   if (isIOS() && detectIOSMajor() < 17) return false;
   if (effectivePixels() < 1.5e6) return false;
   return true;
@@ -105,12 +105,68 @@ function loadFace() {
   return _facePromise;
 }
 
+/* ---------------- GLTF loader cache ---------------- */
+
+const _gltfPromiseCache = {};
+function loadGLTFOnce(url) {
+  if (_gltfPromiseCache[url]) return _gltfPromiseCache[url];
+  _gltfPromiseCache[url] = new Promise((resolve, reject) => {
+    const loader = new GLTFLoader();
+    loader.load(url, (gltf) => {
+      // Normalize: center to origin & scale so the model fits in ~1 world unit tall.
+      const scene = gltf.scene;
+      const box = new THREE.Box3().setFromObject(scene);
+      const size = box.getSize(new THREE.Vector3());
+      const tallest = Math.max(size.x, size.y, size.z) || 1;
+      // Companion sizing: ~0.45 world units ≈ 22% of screen height with our camera.
+      // Small enough to feel like a friend tagging along, not a wall.
+      const target = 0.45;
+      const k = target / tallest;
+      scene.scale.setScalar(k);
+      // Re-measure after scale to recentre on the floor (y=0 = feet)
+      box.setFromObject(scene);
+      const centre = box.getCenter(new THREE.Vector3());
+      scene.position.x -= centre.x;
+      scene.position.z -= centre.z;
+      scene.position.y -= box.min.y; // sit on y=0
+      scene.traverse((o) => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+          if (o.material) {
+            o.material.envMapIntensity = 0.6;
+          }
+        }
+      });
+      resolve(scene);
+    }, undefined, (err) => {
+      console.warn("GLTF load failed:", url, err);
+      reject(err);
+    });
+  });
+  return _gltfPromiseCache[url];
+}
+
+// React hook: loads the GLB and returns a *cloned* scene per consumer instance,
+// so each component has its own transform. Returns null while loading.
+function useGLTFOnce(url) {
+  const [scene, setScene] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadGLTFOnce(url).then((master) => {
+      if (cancelled) return;
+      setScene(master.clone(true));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [url]);
+  return scene;
+}
+
 /* ---------------- Pose helpers ---------------- */
 
 // Convert a MediaPipe pose (normalized landmarks 0..1) into a friendly summary.
 function summarizePose(landmarks, vw, vh, aspect) {
   if (!landmarks || landmarks.length === 0) return null;
-  // 0=nose, 11=L shoulder, 12=R shoulder, 23=L hip, 24=R hip
   const nose = landmarks[0];
   const lSh = landmarks[11], rSh = landmarks[12];
   const lHip = landmarks[23], rHip = landmarks[24];
@@ -121,11 +177,8 @@ function summarizePose(landmarks, vw, vh, aspect) {
   const hipY = lHip && rHip ? (lHip.y + rHip.y) / 2 : shY + 0.25;
   const shoulderW = Math.abs(lSh.x - rSh.x);
   const torsoH = Math.max(0.05, hipY - shY);
-  // Map normalized 0..1 video coords → NDC-ish world units.
-  // Camera is orthographic with frustum (-aspect..+aspect, -1..+1).
   const wx = (headX * 2 - 1) * aspect;
-  const wy = 1 - headY * 2; // flip Y
-  // size proxy: shoulder width in NDC units
+  const wy = 1 - headY * 2;
   const wSize = shoulderW * 2 * aspect;
   return {
     head: { x: wx, y: wy },
@@ -136,94 +189,397 @@ function summarizePose(landmarks, vw, vh, aspect) {
   };
 }
 
-/* ---------------- Scene pieces ---------------- */
+/* ---------------- Character anchor + curiosity hooks ---------------- */
 
-// Module-level texture cache — avoids reloading the same PNG on variant flips
-// and bypasses drei's useTexture / Suspense path that esm.sh seems to drop.
-const _texCache = {};
-function loadStellaTexture(variant) {
-  const url = `assets/stella-${variant || "blob"}.png`;
-  if (_texCache[url]) return _texCache[url];
-  const loader = new THREE.TextureLoader();
-  const tex = loader.load(url);
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.anisotropy = 4;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  _texCache[url] = tex;
-  return tex;
+// Returns a ref that's live-updated each frame with a {x, y, ground, hasPose}
+// target for the given role. role = 'air' (Wisp) or 'ground' (Pip, Mochi).
+// When `anchor` has hasPose: air → above head, ground → at hip line.
+// When no pose: air → slow figure-8 in upper third, ground → fixed floor.
+function useCharacterAnchor(anchorRef, role, aspect, options = {}) {
+  const targetRef = useRef({ x: 0, y: role === "air" ? 0.35 : -0.55, ground: -0.55, hasPose: false });
+  const t0 = useRef(performance.now() / 1000 + Math.random() * 10);
+  useFrame(() => {
+    const a = anchorRef.current;
+    const t = performance.now() / 1000 - t0.current;
+    if (a && a.hasPose) {
+      if (role === "air") {
+        targetRef.current.x = a.head?.x ?? 0;
+        targetRef.current.y = (a.head?.y ?? 0) + 0.15;
+      } else {
+        targetRef.current.x = a.hips?.x ?? a.head?.x ?? 0;
+        targetRef.current.y = a.hips?.y ?? -0.45;
+      }
+      targetRef.current.ground = a.hips?.y ?? -0.55;
+      targetRef.current.hasPose = true;
+    } else {
+      if (role === "air") {
+        targetRef.current.x = 0.45 * Math.sin(t * 0.45) * (aspect.current || 1);
+        targetRef.current.y = 0.32 + 0.08 * Math.cos(t * 0.72);
+      } else {
+        // ground: the character drives its own x via wandering; we only
+        // surface the floor y here, the caller decides x.
+        targetRef.current.y = -0.55;
+      }
+      targetRef.current.ground = -0.55;
+      targetRef.current.hasPose = false;
+    }
+  });
+  return targetRef;
 }
 
-function StellaBillboard({ variant, anchorRef, lit }) {
-  const groupRef = useRef();
-  const texture = useMemo(() => loadStellaTexture(variant), [variant]);
+// Returns a ref to the current curiosity point (x in world units).
+// Repicks every random(intervalRange[0], intervalRange[1]) seconds.
+function useCuriosityPoint(active, getBounds, intervalRange = [4, 8]) {
+  const pointRef = useRef({ x: 0, lastChange: performance.now(), nextIn: 4 + Math.random() * 4 });
+  useFrame(() => {
+    if (!active) return;
+    const now = performance.now();
+    if ((now - pointRef.current.lastChange) / 1000 >= pointRef.current.nextIn) {
+      const b = getBounds();
+      pointRef.current.x = (Math.random() * 2 - 1) * b;
+      pointRef.current.lastChange = now;
+      pointRef.current.nextIn = intervalRange[0] + Math.random() * (intervalRange[1] - intervalRange[0]);
+    }
+  });
+  return pointRef;
+}
 
-  // Lerp toward the live anchor every frame.
+/* ---------------- VFX: BounceMark + Footprint ---------------- */
+
+function BounceMark({ x, y, birth }) {
+  const matRef = useRef();
+  useFrame(() => {
+    const age = (performance.now() - birth) / 1000;
+    if (matRef.current) {
+      matRef.current.opacity = Math.max(0, 0.45 * (1 - age / 1.5));
+    }
+  });
+  return html`
+    <mesh position=${[x, y + 0.001, 0]} rotation=${[-Math.PI / 2, 0, 0]}>
+      <circleGeometry args=${[0.18, 32]} />
+      <meshBasicMaterial
+        ref=${matRef}
+        color=${"#0e2730"}
+        transparent
+        opacity=${0.45}
+        depthWrite=${false}
+        toneMapped=${false}
+      />
+    </mesh>
+  `;
+}
+
+function Footprint({ x, z, side, y, birth, onExpire }) {
+  const matRef = useRef();
+  const meshRef = useRef();
+  useFrame(() => {
+    const age = (performance.now() - birth) / 1000;
+    if (matRef.current) {
+      matRef.current.opacity = Math.max(0, 0.5 * (1 - age / 4));
+    }
+    if (age > 4 && onExpire) onExpire();
+  });
+  return html`
+    <mesh
+      ref=${meshRef}
+      position=${[x, y + 0.002, z]}
+      rotation=${[-Math.PI / 2, 0, side === "L" ? 0.18 : -0.18]}
+    >
+      <circleGeometry args=${[0.06, 24]} />
+      <meshBasicMaterial
+        ref=${matRef}
+        color=${"#1a2e35"}
+        transparent
+        opacity=${0.5}
+        depthWrite=${false}
+        toneMapped=${false}
+      />
+    </mesh>
+  `;
+}
+
+/* ---------------- Wisp (ghost) ---------------- */
+
+function Wisp({ anchor, aspect }) {
+  const scene = useGLTFOnce("assets/ghost.glb");
+  const groupRef = useRef();
+  const wispRef = useRef();
+  const target = useCharacterAnchor(anchor, "air", aspect);
+  const lastXRef = useRef(0);
+  // Smoothed facing velocity used to drive Y rotation.
+  const facingVxRef = useRef(0);
+
   useFrame((_, delta) => {
     const g = groupRef.current;
-    const a = anchorRef.current;
-    if (!g || !a) return;
-    const k = 1 - Math.exp(-delta * 8); // ~120ms time constant
-    g.position.x += (a.x - g.position.x) * k;
-    g.position.y += (a.y - g.position.y) * k;
-    const targetScale = a.scale || 1;
-    g.scale.x += (targetScale - g.scale.x) * k;
-    g.scale.y += (targetScale - g.scale.y) * k;
-    g.scale.z = g.scale.x;
-    // Idle bob
+    if (!g) return;
+    const tgt = target.current;
+    const k = 1 - Math.exp(-delta * 4.5);
+    g.position.x += (tgt.x - g.position.x) * k;
+    g.position.y += (tgt.y - g.position.y) * k;
+    // Idle bob + breathe
     const t = performance.now() / 1000;
-    g.position.y += Math.sin(t * 1.3) * 0.012;
+    const bob = Math.sin(t * 1.4) * 0.04;
+    const breathe = Math.sin(t * 1.2);
+    if (wispRef.current) {
+      wispRef.current.position.y = bob;
+      wispRef.current.scale.x = 1 + breathe * 0.04;
+      wispRef.current.scale.y = 1 - breathe * 0.03;
+      wispRef.current.scale.z = 1 + breathe * 0.04;
+    }
+    // Per-frame velocity in screen-X
+    const dx = g.position.x - lastXRef.current;
+    lastXRef.current = g.position.x;
+    facingVxRef.current = facingVxRef.current * 0.8 + dx * 0.2;
+    const vx = facingVxRef.current;
+
+    // Lean into motion (Z tilt) — already in the original spec
+    g.rotation.z = THREE.MathUtils.clamp(-vx * 12, -0.35, 0.35);
+
+    // Face the camera at rest; turn toward direction of motion when moving.
+    // At rotation.y = 0 the model's +Z points at the camera. Lerp Y towards 0
+    // when vx is tiny, towards ±π/3 (60°) when vx is large.
+    const speed = Math.abs(vx);
+    const targetYaw = speed < 0.0015
+      ? 0
+      : THREE.MathUtils.clamp(vx * 80, -1.0, 1.0); // up to ~57° turn
+    g.rotation.y += (targetYaw - g.rotation.y) * (1 - Math.exp(-delta * 5));
   });
 
+  if (!scene) return null;
   return html`
     <group ref=${groupRef}>
-      <${Billboard} follow=${true}>
-        <mesh position=${[0, 0, -0.01]}>
-          <planeGeometry args=${[1.1, 1.1]} />
-          <meshBasicMaterial
-            map=${texture}
-            transparent=${true}
-            opacity=${lit ? 0.3 : 0.18}
-            blending=${THREE.AdditiveBlending}
-            depthWrite=${false}
-            toneMapped=${false}
-          />
-        </mesh>
-        <mesh>
-          <planeGeometry args=${[0.85, 0.85]} />
-          <meshStandardMaterial
-            map=${texture}
-            transparent=${true}
-            alphaTest=${0.04}
-            roughness=${0.85}
-            metalness=${0.0}
-            emissive=${new THREE.Color("#ffd1d6")}
-            emissiveIntensity=${lit ? 0.25 : 0.08}
-            emissiveMap=${texture}
-          />
-        </mesh>
-      </${Billboard}>
-      <${ContactShadows}
-        position=${[0, -0.5, 0]}
-        opacity=${0.5}
-        blur=${2.6}
-        scale=${1.3}
-        far=${0.7}
-        resolution=${256}
-        color=${"#0e2730"}
-      />
+      <${Trail}
+        width=${0.4}
+        length=${5}
+        decay=${1.1}
+        color=${new THREE.Color("#a8e8ff")}
+        attenuation=${(t) => t * t}
+      >
+        <group ref=${wispRef}>
+          <primitive object=${scene} />
+        </group>
+      </${Trail}>
     </group>
   `;
 }
 
+/* ---------------- Pip (blob) ---------------- */
+
+function Pip({ anchor, aspect }) {
+  const scene = useGLTFOnce("assets/blob.glb");
+  const groupRef = useRef();
+  const meshRef = useRef();
+  const target = useCharacterAnchor(anchor, "ground", aspect);
+
+  // Bounce state — period 0.9s; height 0.18
+  const phaseRef = useRef(Math.random() * Math.PI * 2);
+  const lastImpactRef = useRef(performance.now() / 1000);
+  const [marks, setMarks] = useState([]);
+  const lastXRef = useRef(0);
+  const facingVxRef = useRef(0);
+
+  // Curiosity walk (free-roam target X)
+  const curiosity = useCuriosityPoint(true, () => 0.75 * (aspect.current || 1), [4, 8]);
+
+  useFrame((_, delta) => {
+    const g = groupRef.current;
+    if (!g) return;
+    const tgt = target.current;
+    const t = performance.now() / 1000;
+
+    // X target: pose hip when present, else curiosity point.
+    const desiredX = tgt.hasPose ? tgt.x : curiosity.current.x;
+    const ground = tgt.ground;
+
+    // Move horizontally toward desiredX — slow but steady.
+    const kx = 1 - Math.exp(-delta * 1.6);
+    g.position.x += (desiredX - g.position.x) * kx;
+
+    // Track velocity for facing.
+    const dx = g.position.x - lastXRef.current;
+    lastXRef.current = g.position.x;
+    facingVxRef.current = facingVxRef.current * 0.8 + dx * 0.2;
+    const vx = facingVxRef.current;
+    const speed = Math.abs(vx);
+    // Face camera at rest (yaw=0); turn ±π/2 to face direction of travel.
+    const targetYaw = speed < 0.0015
+      ? 0
+      : THREE.MathUtils.clamp(vx * 100, -Math.PI / 2, Math.PI / 2);
+    g.rotation.y += (targetYaw - g.rotation.y) * (1 - Math.exp(-delta * 5));
+
+    // Bounce: pulse phase forward. Period scales slightly with travel speed.
+    phaseRef.current += delta * (2 * Math.PI / 0.9);
+    if (phaseRef.current > Math.PI * 2) phaseRef.current -= Math.PI * 2;
+
+    // Height: 0 at phase 0/2π (impact), max at π (apex).
+    const heightPct = Math.max(0, Math.sin(phaseRef.current));
+    const bounceY = heightPct * 0.18;
+    g.position.y = ground + bounceY;
+
+    // Detect impact (phase crossed 2π back to 0)
+    const impacted = phaseRef.current < 0.1 && (t - lastImpactRef.current) > 0.6;
+    if (impacted) {
+      lastImpactRef.current = t;
+      const id = `${t}-${Math.random().toString(36).slice(2, 6)}`;
+      // Replace any existing mark with the new one — only one visible at a time.
+      setMarks([{ id, x: g.position.x, y: ground, birth: performance.now() }]);
+    }
+
+    // Squash & stretch
+    if (meshRef.current) {
+      if (heightPct < 0.05) {
+        // Impact frame — squash
+        const u = 1 - heightPct / 0.05;
+        meshRef.current.scale.x = 1 + 0.25 * u;
+        meshRef.current.scale.y = 1 - 0.30 * u;
+        meshRef.current.scale.z = 1 + 0.25 * u;
+      } else {
+        // Airborne — stretch
+        const u = heightPct;
+        meshRef.current.scale.x = 0.92 - 0.05 * u;
+        meshRef.current.scale.y = 1.10 + 0.10 * u;
+        meshRef.current.scale.z = 0.92 - 0.05 * u;
+      }
+    }
+  });
+
+  if (!scene) return null;
+  return html`
+    <group>
+      <group ref=${groupRef}>
+        <group ref=${meshRef}>
+          <primitive object=${scene} />
+        </group>
+      </group>
+      ${marks.map((m) => html`<${BounceMark} key=${m.id} x=${m.x} y=${m.y} birth=${m.birth} />`)}
+    </group>
+  `;
+}
+
+/* ---------------- Mochi (bear) ---------------- */
+
+let _footprintIdCounter = 0;
+
+function Mochi({ anchor, aspect }) {
+  const scene = useGLTFOnce("assets/bear.glb");
+  const groupRef = useRef();
+  const meshRef = useRef();
+  const target = useCharacterAnchor(anchor, "ground", aspect);
+  const [footprints, setFootprints] = useState([]);
+  const walkPhaseRef = useRef(0);
+  const lastSideRef = useRef("R");
+  const idleDirRef = useRef(1); // for free-roam left-right paces
+
+  useFrame((_, delta) => {
+    const g = groupRef.current;
+    if (!g) return;
+    const tgt = target.current;
+    const t = performance.now() / 1000;
+    const ground = tgt.ground;
+    g.position.y = ground;
+
+    // X target: pose hip when present, else slow pace.
+    let desiredX;
+    if (tgt.hasPose) {
+      desiredX = tgt.x;
+    } else {
+      const span = 0.6 * (aspect.current || 1);
+      desiredX = idleDirRef.current * span * (0.4 + 0.5 * Math.sin(t * 0.3));
+      if (Math.random() < 0.001) idleDirRef.current *= -1;
+    }
+    const dx = desiredX - g.position.x;
+    const kx = 1 - Math.exp(-delta * 1.4);
+    g.position.x += dx * kx;
+    const speed = Math.abs(dx) * kx / Math.max(delta, 0.001);
+
+    // Walk phase advances faster when actually moving
+    const phaseRate = 4 + Math.min(speed, 1.5) * 6;
+    const prevPhase = walkPhaseRef.current;
+    walkPhaseRef.current += delta * phaseRate;
+
+    // Waddle
+    if (meshRef.current) {
+      meshRef.current.rotation.z = Math.sin(walkPhaseRef.current) * 0.18;
+      meshRef.current.position.y = Math.abs(Math.sin(walkPhaseRef.current)) * 0.04;
+      meshRef.current.rotation.x = -THREE.MathUtils.clamp(speed * 0.4, 0, 0.25);
+    }
+
+    // Face camera at rest; turn toward walking direction when moving.
+    // Bear stays in profile while walking — full ±π/2 rotation. Lerp slower
+    // than Wisp/Pip so the turn reads as a deliberate pivot, not a snap.
+    const targetYaw = speed < 0.01
+      ? 0
+      : (dx > 0 ? Math.PI / 2 : -Math.PI / 2);
+    g.rotation.y += (targetYaw - g.rotation.y) * (1 - Math.exp(-delta * 3.5));
+
+    // Footprints: step on each phase crossing of 0 or π
+    const stepBefore = Math.floor(prevPhase / Math.PI);
+    const stepAfter = Math.floor(walkPhaseRef.current / Math.PI);
+    if (stepAfter > stepBefore) {
+      const side = lastSideRef.current === "L" ? "R" : "L";
+      lastSideRef.current = side;
+      const offsetZ = side === "L" ? -0.08 : 0.08;
+      const fp = {
+        id: ++_footprintIdCounter,
+        x: g.position.x - 0.02,
+        z: offsetZ,
+        side,
+        y: ground,
+        birth: performance.now(),
+      };
+      setFootprints((prev) => {
+        const next = [...prev, fp];
+        // Cap at 6 — drop oldest beyond.
+        return next.length > 6 ? next.slice(next.length - 6) : next;
+      });
+    }
+  });
+
+  const expire = useCallback((id) => {
+    setFootprints((prev) => prev.filter((p) => p.id !== id));
+  }, []);
+
+  if (!scene) return null;
+  return html`
+    <group>
+      <group ref=${groupRef}>
+        <group ref=${meshRef}>
+          <primitive object=${scene} />
+        </group>
+      </group>
+      ${footprints.map((f) => html`
+        <${Footprint}
+          key=${f.id}
+          x=${f.x}
+          z=${f.z}
+          side=${f.side}
+          y=${f.y}
+          birth=${f.birth}
+          onExpire=${() => expire(f.id)}
+        />
+      `)}
+    </group>
+  `;
+}
+
+/* ---------------- Character dispatcher ---------------- */
+
+function Character({ variant, anchor, aspect }) {
+  if (variant === "ghost") return html`<${Wisp} anchor=${anchor} aspect=${aspect} />`;
+  if (variant === "blob") return html`<${Pip} anchor=${anchor} aspect=${aspect} />`;
+  // default to bear
+  return html`<${Mochi} anchor=${anchor} aspect=${aspect} />`;
+}
+
+/* ---------------- Lights ---------------- */
+
 function RembrandtLights({ lit }) {
   return html`
-    <ambientLight intensity=${0.35} color=${"#cfe9ee"} />
-    <hemisphereLight intensity=${0.4} color=${"#ffe7ea"} groundColor=${"#0a1b22"} />
-    <!-- Key light, warm, upper-left -->
+    <ambientLight intensity=${0.5} color=${"#cfe9ee"} />
+    <hemisphereLight intensity=${0.55} color=${"#ffe7ea"} groundColor=${"#0a1b22"} />
     <spotLight
       position=${[-1.4, 1.6, 1.6]}
-      intensity=${lit ? 1.8 : 1.2}
+      intensity=${lit ? 1.8 : 1.3}
       angle=${0.7}
       penumbra=${0.7}
       distance=${6}
@@ -231,30 +587,33 @@ function RembrandtLights({ lit }) {
       color=${"#ffd9c2"}
       castShadow
     />
-    <!-- Fill, cool, lower-right -->
     <spotLight
       position=${[1.0, -0.4, 1.2]}
-      intensity=${0.5}
+      intensity=${0.55}
       angle=${0.9}
       penumbra=${0.95}
       distance=${5}
       decay=${1.6}
       color=${"#a0d8ff"}
     />
-    <!-- Rim, behind -->
     <pointLight position=${[0.0, 0.4, -1.2]} intensity=${0.7} color=${"#96deeb"} distance=${4} />
   `;
 }
 
+/* ---------------- Companion Scene ---------------- */
+
 function CompanionScene({ getState, onPoseStable }) {
-  const { camera, size } = useThree();
-  const anchorRef = useRef({ x: 0, y: 0, scale: 1 });
+  const { size } = useThree();
+  // Shared anchor that all characters read from. Updated each frame by the pose loop.
+  const anchorRef = useRef({ hasPose: false, head: { x: 0, y: 0 }, hips: { x: 0, y: -0.5 }, shoulders: { x: 0, y: -0.1 }, scale: 1 });
+  const aspectRef = useRef(size.width / Math.max(size.height, 1));
+  useEffect(() => { aspectRef.current = size.width / Math.max(size.height, 1); }, [size.width, size.height]);
+
   const stableCountRef = useRef(0);
   const stableFiredRef = useRef(false);
   const [variant, setVariant] = useState(() => getState().variant || "blob");
   const [spotted, setSpotted] = useState(false);
 
-  // Pull state updates from the shell.
   useEffect(() => {
     let raf = 0;
     const tick = () => {
@@ -267,7 +626,6 @@ function CompanionScene({ getState, onPoseStable }) {
     return () => cancelAnimationFrame(raf);
   }, [variant, spotted]);
 
-  // Pose detection loop, tied to the R3F render loop.
   const lastTsRef = useRef(0);
   const detectorRef = useRef(null);
   useEffect(() => {
@@ -279,20 +637,25 @@ function CompanionScene({ getState, onPoseStable }) {
   useFrame(() => {
     const det = detectorRef.current;
     const video = getState().videoEl;
-    if (!det || !video || video.readyState < 2 || video.videoWidth === 0) return;
+    if (!det || !video || video.readyState < 2 || video.videoWidth === 0) {
+      anchorRef.current.hasPose = false;
+      return;
+    }
     const ts = performance.now();
     const useTs = ts > lastTsRef.current ? ts : lastTsRef.current + 1;
     lastTsRef.current = useTs;
     try {
       const res = det.detectForVideo(video, useTs);
-      const aspect = size.width / size.height;
+      const aspect = size.width / Math.max(size.height, 1);
       const landmarks = res?.landmarks?.[0];
       if (landmarks && landmarks.length) {
         const p = summarizePose(landmarks, video.videoWidth, video.videoHeight, aspect);
         if (p) {
           anchorRef.current = {
-            x: p.head.x,
-            y: p.head.y + 0.05,
+            hasPose: true,
+            head: p.head,
+            hips: p.hips,
+            shoulders: p.shoulders,
             scale: Math.max(0.55, Math.min(1.45, p.width * 1.6 + 0.7)),
           };
           stableCountRef.current = Math.min(60, stableCountRef.current + 1);
@@ -302,8 +665,7 @@ function CompanionScene({ getState, onPoseStable }) {
           }
         }
       } else {
-        // Smoothly drift back to center
-        anchorRef.current = { x: 0, y: 0.05, scale: 1 };
+        anchorRef.current.hasPose = false;
         stableCountRef.current = Math.max(0, stableCountRef.current - 1);
         if (stableCountRef.current === 0) stableFiredRef.current = false;
       }
@@ -314,50 +676,54 @@ function CompanionScene({ getState, onPoseStable }) {
 
   return html`
     <${RembrandtLights} lit=${spotted} />
-    <${StellaBillboard} variant=${variant} anchorRef=${anchorRef} lit=${spotted} />
+    <${Character} variant=${variant} anchor=${anchorRef} aspect=${aspectRef} />
+    <${ContactShadows}
+      position=${[0, -0.56, 0]}
+      opacity=${0.55}
+      blur=${2.6}
+      scale=${1.8}
+      far=${0.7}
+      resolution=${256}
+      color=${"#0e2730"}
+    />
   `;
 }
 
-function HaloRing({ pose, label, onClick }) {
-  const groupRef = useRef();
-  const ringRef = useRef();
-  const anchorRef = useRef({ x: pose.head.x, y: pose.head.y, w: pose.width });
+/* ---------------- Halos Scene (one character per detected pose) ---------------- */
 
-  // Update target on prop change
-  useEffect(() => {
-    anchorRef.current = { x: pose.head.x, y: pose.head.y, w: pose.width };
-  }, [pose.head.x, pose.head.y, pose.width]);
+const HALO_VARIANTS = ["ghost", "blob", "bear"];
+const HALO_NAMES = ["Sam", "Priya", "Jay", "Stella"];
 
-  useFrame((_, delta) => {
-    const g = groupRef.current;
-    if (!g) return;
-    const k = 1 - Math.exp(-delta * 9);
-    g.position.x += (anchorRef.current.x - g.position.x) * k;
-    g.position.y += (anchorRef.current.y - g.position.y) * k;
-    const targetScale = Math.max(0.4, Math.min(1.6, anchorRef.current.w * 2.0 + 0.4));
-    g.scale.x += (targetScale - g.scale.x) * k;
-    g.scale.y = g.scale.x;
-    g.scale.z = g.scale.x;
-    if (ringRef.current) {
-      const t = performance.now() / 1000;
-      ringRef.current.material.opacity = 0.55 + Math.sin(t * 2.2) * 0.2;
-    }
+function HaloCharacter({ pose, variant, label, onClick }) {
+  // Per-character anchor that the dispatcher characters can read.
+  const anchorRef = useRef({
+    hasPose: true,
+    head: pose.head,
+    hips: pose.hips,
+    shoulders: pose.shoulders,
+    scale: 1,
   });
+  const aspectRef = useRef(1);
+  const { size } = useThree();
+  useEffect(() => { aspectRef.current = size.width / Math.max(size.height, 1); }, [size.width, size.height]);
+  useEffect(() => {
+    anchorRef.current = { hasPose: true, head: pose.head, hips: pose.hips, shoulders: pose.shoulders, scale: 1 };
+  }, [pose.head.x, pose.head.y, pose.hips.x, pose.hips.y]);
 
   return html`
-    <group ref=${groupRef} onClick=${(e) => { e.stopPropagation(); onClick && onClick(); }}>
-      <!-- Outer halo -->
-      <mesh ref=${ringRef}>
-        <ringGeometry args=${[0.35, 0.45, 64]} />
-        <meshBasicMaterial color=${"#96deeb"} transparent opacity=${0.75} side=${THREE.DoubleSide} toneMapped=${false} />
+    <group onClick=${(e) => { e.stopPropagation(); onClick && onClick(); }}>
+      <${Character} variant=${variant} anchor=${anchorRef} aspect=${aspectRef} />
+      <mesh position=${[pose.hips.x, pose.hips.y - 0.05, 0]} rotation=${[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args=${[0.28, 0.34, 48]} />
+        <meshBasicMaterial
+          color=${"#96deeb"}
+          transparent
+          opacity=${0.55}
+          side=${THREE.DoubleSide}
+          toneMapped=${false}
+        />
       </mesh>
-      <!-- Inner glow -->
-      <mesh position=${[0, 0, -0.02]}>
-        <circleGeometry args=${[0.42, 48]} />
-        <meshBasicMaterial color=${"#d0f8ff"} transparent opacity=${0.18} blending=${THREE.AdditiveBlending} depthWrite=${false} toneMapped=${false} />
-      </mesh>
-      <!-- Name label, screen-aligned -->
-      <${Html} center distanceFactor=${1.5} position=${[0, -0.55, 0]} zIndexRange=${[10, 0]} pointerEvents="none">
+      <${Html} center distanceFactor=${1.6} position=${[pose.head.x, pose.head.y + 0.32, 0]} zIndexRange=${[10, 0]} pointerEvents="none">
         <div class="ar-name-tag">${label}</div>
       </${Html}>
     </group>
@@ -369,7 +735,6 @@ function HalosScene({ getState, onHaloClick }) {
   const [poses, setPoses] = useState([]);
   const lastTsRef = useRef(0);
   const detectorRef = useRef(null);
-  const NAMES = ["Sam", "Priya", "Jay", "Stella"];
 
   useEffect(() => {
     let cancelled = false;
@@ -386,16 +751,15 @@ function HalosScene({ getState, onHaloClick }) {
     lastTsRef.current = useTs;
     try {
       const res = det.detectForVideo(video, useTs);
-      const aspect = size.width / size.height;
-      const all = (res?.landmarks || []).map((lm, i) =>
+      const aspect = size.width / Math.max(size.height, 1);
+      const all = (res?.landmarks || []).map((lm) =>
         summarizePose(lm, video.videoWidth, video.videoHeight, aspect)
       ).filter(Boolean).slice(0, 4);
-      // Only set if it changed meaningfully (cheap stable hash)
       setPoses((prev) => {
         if (prev.length !== all.length) return all;
         for (let i = 0; i < all.length; i++) {
           const a = all[i], p = prev[i];
-          if (Math.abs(a.head.x - p.head.x) > 0.01 || Math.abs(a.head.y - p.head.y) > 0.01) return all;
+          if (Math.abs(a.head.x - p.head.x) > 0.02 || Math.abs(a.head.y - p.head.y) > 0.02) return all;
         }
         return prev;
       });
@@ -403,13 +767,15 @@ function HalosScene({ getState, onHaloClick }) {
   });
 
   return html`
-    <ambientLight intensity=${0.6} />
+    <${RembrandtLights} lit=${false} />
+    <${ContactShadows} position=${[0, -0.56, 0]} opacity=${0.45} blur=${2.6} scale=${1.8} far=${0.7} resolution=${256} color=${"#0e2730"} />
     ${poses.map((p, i) => html`
-      <${HaloRing}
+      <${HaloCharacter}
         key=${i}
         pose=${p}
-        label=${NAMES[i % NAMES.length] + " · available"}
-        onClick=${() => onHaloClick && onHaloClick(NAMES[i % NAMES.length])}
+        variant=${HALO_VARIANTS[i % HALO_VARIANTS.length]}
+        label=${HALO_NAMES[i % HALO_NAMES.length] + " · available"}
+        onClick=${() => onHaloClick && onHaloClick(HALO_NAMES[i % HALO_NAMES.length])}
       />
     `)}
   `;
@@ -418,8 +784,6 @@ function HalosScene({ getState, onHaloClick }) {
 /* ---------------- Root scene component ---------------- */
 
 function ARScene({ getState, mode, onPoseStable, onHaloClick }) {
-  // Perspective camera positioned so (-1..+1) in X/Y roughly equals NDC at z=0.
-  // 2 * cameraZ * tan(fov/2) ≈ 2 → cameraZ ≈ 2.2 with fov 50.
   const camera = useMemo(() => ({
     position: [0, 0, 2.2],
     fov: 50,
@@ -431,6 +795,7 @@ function ARScene({ getState, mode, onPoseStable, onHaloClick }) {
     <${Canvas}
       camera=${camera}
       frameloop="always"
+      shadows
       gl=${{ alpha: true, antialias: true, preserveDrawingBuffer: true, powerPreference: "high-performance" }}
       style=${{ position: "absolute", inset: 0, background: "transparent", touchAction: "none" }}
       onCreated=${({ gl }) => { gl.setClearColor(0x000000, 0); gl.setClearAlpha(0); }}
@@ -479,7 +844,6 @@ async function mountARScene(rootEl, opts = {}) {
 /* ---------------- Boot probe + global expose ---------------- */
 
 async function runPerfProbe() {
-  // 3-second sample after pose landmarker is ready. Reports avg fps of the rAF loop.
   await loadPose();
   return new Promise((resolve) => {
     let frames = 0;
@@ -488,8 +852,7 @@ async function runPerfProbe() {
       frames++;
       const elapsed = performance.now() - start;
       if (elapsed >= 3000) {
-        const fps = (frames / elapsed) * 1000;
-        resolve(fps);
+        resolve((frames / elapsed) * 1000);
       } else {
         requestAnimationFrame(tick);
       }
@@ -498,26 +861,32 @@ async function runPerfProbe() {
   });
 }
 
-let _faceEligible = null; // unresolved until probe completes
+let _faceEligible = null;
 async function isFaceEligible() {
   if (_faceEligible !== null) return _faceEligible;
   try {
     const fps = await runPerfProbe();
     _faceEligible = fps >= 25;
-    if (_faceEligible) {
-      // Kick off the face landmarker load in the background so it's ready when needed.
-      loadFace();
-    }
+    if (_faceEligible) loadFace();
   } catch {
     _faceEligible = false;
   }
   return _faceEligible;
 }
 
+// Pre-warm GLBs in the background so the first character mount feels instant.
+function prewarmCharacters() {
+  loadGLTFOnce("assets/ghost.glb").catch(() => {});
+  loadGLTFOnce("assets/blob.glb").catch(() => {});
+  loadGLTFOnce("assets/bear.glb").catch(() => {});
+}
+
 window.AR3D = {
   mountARScene,
   isFaceEligible,
   shouldUsePostFX,
-  _internals: { loadPose, loadFace, loadVision },
+  prewarmCharacters,
+  _internals: { loadPose, loadFace, loadVision, loadGLTFOnce },
 };
+prewarmCharacters();
 window.dispatchEvent(new Event("ar3d-ready"));
