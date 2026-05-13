@@ -2091,3 +2091,279 @@ button {
 .spacer { flex: 1; }
 
 /* Welcome and picker don't show dock — keep their own padding */
+
+/* ---------- Setup / onboarding ---------- */
+.setup {
+  padding: 50px 18px 24px;
+  overflow-y: auto;
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(255, 231, 234, 0.85) 0%, transparent 55%),
+    linear-gradient(180deg, var(--sky-light) 0%, #BEE9F2 60%, #D7F0F5 100%);
+}
+.setup-hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 4px 14px;
+}
+.setup-halo {
+  position: relative;
+  width: 160px;
+  height: 160px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 6px;
+}
+.setup-halo::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 240, 240, 0.85) 0%, transparent 65%);
+}
+.setup-title {
+  font-family: "Indie Flower", cursive;
+  font-size: 26px;
+  line-height: 1.1;
+  color: var(--navy);
+  text-align: center;
+  margin: 2px 8px 6px;
+}
+.setup-sub {
+  font-family: "Imprima", sans-serif;
+  font-size: 13px;
+  color: var(--navy);
+  opacity: 0.7;
+  text-align: center;
+  margin: 0 8px;
+}
+.setup-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 18px 0 14px;
+}
+.setup-card {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 14px rgba(3, 90, 110, 0.08);
+}
+.setup-card.state-granted { background: rgba(222, 252, 211, 0.85); }
+.setup-card.state-denied  { background: rgba(255, 231, 234, 0.85); }
+.setup-card.state-skipped { background: rgba(245, 245, 250, 0.85); }
+.setup-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: rgba(208, 248, 255, 0.7);
+  display: grid;
+  place-items: center;
+  color: var(--navy);
+}
+.setup-card-title {
+  font-family: "Indie Flower", cursive;
+  font-size: 17px;
+  color: var(--navy);
+  line-height: 1.1;
+}
+.setup-card-body {
+  font-family: "Imprima", sans-serif;
+  font-size: 12px;
+  color: var(--navy);
+  opacity: 0.75;
+  margin-top: 2px;
+}
+.setup-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+.setup-status {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: "Imprima", sans-serif;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(0, 70, 233, 0.25);
+  color: var(--navy);
+  min-width: 64px;
+  text-align: center;
+}
+.setup-status.ok { background: #c8f0c4; border-color: #6dc26a; }
+.setup-status.no { background: #ffd9dd; border-color: #d97a85; }
+.setup-status.skip { background: #ececf3; border-color: #c6c6d0; opacity: 0.85; }
+.setup-status.ask { background: var(--sky-light); }
+.setup-skip {
+  font-family: "Imprima", sans-serif;
+  font-size: 11px;
+  opacity: 0.6;
+  padding: 0 4px;
+  text-decoration: underline;
+}
+.setup-weather {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  font-family: "Imprima", sans-serif;
+  font-size: 13px;
+  color: var(--navy);
+  margin: 4px auto 14px;
+  width: fit-content;
+  max-width: 100%;
+  text-align: center;
+}
+.setup-weather .w-icon { font-size: 18px; }
+.setup-cta {
+  align-self: center;
+  margin-top: 6px;
+}
+
+/* ---------- Weather chip on Home ---------- */
+.weather-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Imprima", sans-serif;
+  font-size: 12px;
+  color: var(--navy);
+  opacity: 0.9;
+  justify-content: center;
+  margin: 0 auto;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.weather-chip .led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5cd9a3;
+  box-shadow: 0 0 6px #5cd9a3;
+}
+.weather-chip .w-icon { font-size: 16px; }
+
+/* ---------- Home header — perms link ---------- */
+.home-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.perms-link {
+  font-family: "Imprima", sans-serif;
+  font-size: 11px;
+  color: var(--navy);
+  opacity: 0.6;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.4);
+  text-decoration: underline;
+}
+.perms-link:hover { opacity: 0.9; }
+
+/* ---------- AR — scan badge + face boxes + Stella anchor + XR pill ---------- */
+.ar-stella-anchor {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  transition: left 0.45s ease-out, top 0.45s ease-out;
+  pointer-events: none;
+}
+.scan-badge {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: white;
+  font-family: "Imprima", sans-serif;
+  font-size: 11px;
+  z-index: 35;
+  white-space: nowrap;
+  opacity: 0.95;
+}
+.face-box {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid rgba(255, 255, 255, 0.5);
+  border-radius: 14px;
+  box-shadow: 0 0 18px rgba(150, 222, 235, 0.35);
+  pointer-events: none;
+  z-index: 6;
+  transition: left 0.12s linear, top 0.12s linear, width 0.12s linear, height 0.12s linear;
+}
+.xr-pill {
+  position: absolute;
+  bottom: 220px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--navy);
+  font-family: "Indie Flower", cursive;
+  font-size: 15px;
+  z-index: 40;
+  box-shadow: var(--shadow-soft);
+}
+
+/* ---------- Cinematic AR canvas (R3F mount target) ---------- */
+.ar3d-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: auto;
+}
+.ar3d-stage canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  background: transparent !important;
+}
+.ar-name-tag {
+  font-family: "Imprima", sans-serif;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--navy);
+  border: 1px solid rgba(150, 222, 235, 0.8);
+  white-space: nowrap;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
+}
+
+/* ---------- Find Friends — halo size var + no-faces hint ---------- */
+.user-halo {
+  width: var(--halo-size, 80px);
+  height: var(--halo-size, 80px);
+  transition: left 0.18s ease-out, top 0.18s ease-out, width 0.18s ease-out, height 0.18s ease-out;
+}
+.no-faces-hint {
+  position: absolute;
+  bottom: 30%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: "Indie Flower", cursive;
+  color: white;
+  font-size: 17px;
+  opacity: 0.85;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  z-index: 20;
+  white-space: nowrap;
+}
+

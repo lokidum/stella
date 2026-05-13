@@ -112,24 +112,53 @@ const STATUSES = [
   { id: "invisible", label: "Please don't notice me", color: "#b6b6c8" },
 ];
 
-function HomeScreen({ variant, name, status, setStatus, onNav, onAR, onChat }) {
+function HomeScreen({ variant, name, status, setStatus, perms, geo, onNav, onAR, onChat, onOpenSetup }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [weather, setWeather] = useState(null);
   const currentStatus = STATUSES.find((s) => s.id === status) || STATUSES[0];
+  const locOn = perms?.location === "granted";
+
+  useEffect(() => {
+    if (locOn && geo && window.fetchWeather) {
+      window.fetchWeather(geo.lat, geo.lon).then((w) => w && setWeather(w));
+    }
+  }, [locOn, geo && geo.lat, geo && geo.lon]);
 
   return (
     <div className="screen home" data-screen-label="03 Home Hub">
       <div className="home-header">
         <h1 className="home-greeting">So good to see you again, {name}!</h1>
-        <div className="home-avatar">M</div>
+        <div className="home-header-right">
+          {onOpenSetup && (
+            <button className="perms-link" onClick={onOpenSetup} aria-label="Permissions">
+              permissions
+            </button>
+          )}
+          <div className="home-avatar">{(name || "M").slice(0, 1).toUpperCase()}</div>
+        </div>
       </div>
 
       <div className="home-stella">
         <Stella variant={variant} size={110} mode="idle" />
       </div>
 
-      <div className="home-status">
-        <span className="led" />
-        Connected to AR glasses
+      <div className="weather-chip">
+        {locOn && weather ? (
+          <>
+            <span className="w-icon" aria-hidden="true">{weather.icon}</span>
+            <span><b>{weather.tempC}°C</b> · {weather.vibe}</span>
+          </>
+        ) : locOn ? (
+          <>
+            <span className="led" />
+            Stella is reading the sky…
+          </>
+        ) : (
+          <>
+            <span className="led" />
+            Stella is here, with you.
+          </>
+        )}
       </div>
 
       <div className="status-row" style={{ position: "relative" }}>
@@ -432,17 +461,45 @@ const NEARBY_STELLAS = [
   { id: "u3", name: "Jay", variant: "ghost", x: 72, y: 56, mood: "Wobbly today", note: "Would love a gentle wave. No pressure." },
 ];
 
-function FindUsersScreen({ variant, onBack, onChat }) {
+const FACE_NAMES = ["Sam", "Priya", "Jay", "Stella"];
+const FACE_MOODS = [
+  { mood: "Quiet, open to a chat", note: "Said hi to two people today." },
+  { mood: "Feeling social", note: "Looking for a study buddy." },
+  { mood: "Wobbly today", note: "Would love a gentle wave. No pressure." },
+  { mood: "Just here", note: "Listening to the day." },
+];
+
+function FindUsersScreen({ variant, perms, setPerm, onBack, onChat }) {
   const videoRef = useRef(null);
+  const ar3dRef = useRef(null);
   const [camOn, setCamOn] = useState(false);
   const [permState, setPermState] = useState("ask"); // ask | loading | granted | denied
   const [selected, setSelected] = useState(null);
   const [waved, setWaved] = useState({});
+  const [haloClicked, setHaloClicked] = useState(null);
+
+  // Mount cinematic AR halos when camera is on. Falls back to CSS halos otherwise.
+  // `?ar3d=preview` query forces mount with a synthetic video for headless previews.
+  const ar3dPreview = typeof window !== "undefined" && /[?&]ar3d=preview/.test(window.location.search);
+  Sense.useAR3D({
+    containerRef: ar3dRef,
+    videoRef,
+    active: camOn || ar3dPreview,
+    bypassVideo: ar3dPreview,
+    mode: "halos",
+    variant,
+    onHaloClick: (name) => {
+      const fallback = NEARBY_STELLAS.find((u) => u.name === name) || NEARBY_STELLAS[0];
+      setSelected(fallback.id);
+      setHaloClicked(name);
+    },
+  });
 
   const start = async () => {
     setPermState("loading");
     if (!navigator.mediaDevices?.getUserMedia) {
       setPermState("denied");
+      setPerm && setPerm("camera", "denied");
       return;
     }
     try {
@@ -456,8 +513,10 @@ function FindUsersScreen({ variant, onBack, onChat }) {
       }
       setCamOn(true);
       setPermState("granted");
+      setPerm && setPerm("camera", "granted");
     } catch (e) {
       setPermState("denied");
+      setPerm && setPerm("camera", "denied");
     }
   };
 
@@ -468,12 +527,19 @@ function FindUsersScreen({ variant, onBack, onChat }) {
     };
   }, []);
 
+  // Camera off → fall back to fixtures.
+  const liveUsers = camOn ? [] : NEARBY_STELLAS;
   const sel = NEARBY_STELLAS.find((u) => u.id === selected);
 
   return (
     <div className="screen ar-view" data-screen-label="06 Find Stella Users">
       {camOn ? (
-        <video ref={videoRef} className="ar-camera" playsInline muted autoPlay />
+        <>
+          <video ref={videoRef} className="ar-camera" playsInline muted autoPlay />
+          <div ref={ar3dRef} className="ar3d-stage" />
+        </>
+      ) : ar3dPreview ? (
+        <div ref={ar3dRef} className="ar3d-stage" />
       ) : (
         <div className="ar-fallback-bg" />
       )}
@@ -525,10 +591,10 @@ function FindUsersScreen({ variant, onBack, onChat }) {
         </div>
       )}
 
-      {/* Halos over nearby Stellas */}
-      {(permState === "granted" || permState === "denied") && permState !== "ask" && (permState === "granted" ? camOn || true : true) && permState !== "loading" && (
+      {/* Camera-off fallback halos (CSS); when camera is on the R3F canvas owns it. */}
+      {permState !== "ask" && permState !== "loading" && !camOn && (
         <>
-          {NEARBY_STELLAS.map((u) => (
+          {liveUsers.map((u) => (
             <button
               key={u.id}
               className="user-halo"

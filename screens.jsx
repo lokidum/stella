@@ -1,5 +1,5 @@
 // Screens for the Stella prototype
-const { useEffect, useRef, useState, useCallback } = React;
+const { useEffect, useRef, useState, useCallback, useMemo } = React;
 
 /* ----------------------- Icons ----------------------- */
 const IconBack = (p) => (
@@ -29,6 +29,31 @@ const IconChat = (p) => (
 const IconHeart = (p) => (
   <svg {...p} viewBox="0 0 24 24" fill="#ffc4cc" stroke="#c25a6b" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
     <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+  </svg>
+);
+const IconMotion = (p) => (
+  <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="6" y="2" width="12" height="20" rx="3" />
+    <path d="M9 7l3-2 3 2" />
+    <path d="M9 17l3 2 3-2" />
+  </svg>
+);
+const IconBell = (p) => (
+  <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+    <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+  </svg>
+);
+const IconPin = (p) => (
+  <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+    <circle cx="12" cy="10" r="3"/>
+  </svg>
+);
+const IconCam = (p) => (
+  <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+    <circle cx="12" cy="13" r="4"/>
   </svg>
 );
 
@@ -151,22 +176,190 @@ function PickerScreen({ onBack, onSubmit, variant, setVariant, name, setName }) 
   );
 }
 
+/* ----------------------- Setup / Onboarding ----------------------- */
+const PERM_CARDS = [
+  {
+    key: "camera",
+    Icon: IconCam,
+    title: "May she look through your camera?",
+    body: "She uses the back camera as a soft window onto the world. Nothing is recorded.",
+  },
+  {
+    key: "location",
+    Icon: IconPin,
+    title: "May she sense where you are?",
+    body: "So she can pick out a quiet corner nearby, and read the weather of your day.",
+  },
+  {
+    key: "motion",
+    Icon: IconMotion,
+    title: "May she feel how you move?",
+    body: "Tilting your phone lets her gently sway in time with you. She uses this to feel present.",
+  },
+  {
+    key: "notifications",
+    Icon: IconBell,
+    title: "May she whisper now and then?",
+    body: "A soft tap when a friend waves, or when a quiet corner opens up. Nothing loud.",
+  },
+];
+
+function SetupScreen({ variant, name, perms, setPerm, geo, setGeo, onContinue }) {
+  const [weather, setWeather] = useState(null);
+  const [pending, setPending] = useState({});
+
+  // If location was previously granted, fetch the weather once on mount.
+  useEffect(() => {
+    if (perms.location === "granted" && geo && !weather && window.fetchWeather) {
+      window.fetchWeather(geo.lat, geo.lon).then((w) => w && setWeather(w));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const ask = async (key) => {
+    if (pending[key]) return;
+    setPending((p) => ({ ...p, [key]: true }));
+    try {
+      if (key === "camera") {
+        const r = await Sense.requestCamera();
+        setPerm("camera", r === "granted" ? "granted" : "denied");
+      } else if (key === "location") {
+        const r = await Sense.requestLocation();
+        if (r.state === "granted") {
+          setPerm("location", "granted");
+          setGeo({ lat: r.lat, lon: r.lon });
+          if (window.fetchWeather) {
+            const w = await window.fetchWeather(r.lat, r.lon);
+            if (w) setWeather(w);
+          }
+        } else {
+          setPerm("location", "denied");
+        }
+      } else if (key === "motion") {
+        const r = await Sense.requestMotion();
+        setPerm("motion", r === "granted" ? "granted" : "denied");
+      } else if (key === "notifications") {
+        const r = await Sense.requestNotifications();
+        setPerm("notifications", r === "granted" ? "granted" : "denied");
+      }
+    } finally {
+      setPending((p) => ({ ...p, [key]: false }));
+    }
+  };
+
+  const skip = (key) => setPerm(key, "skipped");
+
+  const statusLabel = (s) => {
+    if (s === "granted") return "✓ on";
+    if (s === "denied") return "✕ not now";
+    if (s === "skipped") return "skipped";
+    return "Ask";
+  };
+
+  return (
+    <div className="screen setup" data-screen-label="02.5 Setup">
+      <div className="setup-hero">
+        <div className="setup-halo">
+          <Stella variant={variant} size={120} mode="idle" />
+        </div>
+        <h1 className="setup-title">A few soft asks before we set off.</h1>
+        <p className="setup-sub">Nothing you grant is shared. You can change any of this later.</p>
+      </div>
+
+      <div className="setup-cards">
+        {PERM_CARDS.map(({ key, Icon, title, body }) => {
+          const state = perms[key] || "unknown";
+          const isAsk = state === "unknown";
+          return (
+            <div key={key} className={`setup-card state-${state}`}>
+              <div className="setup-icon"><Icon style={{ width: 22, height: 22 }} /></div>
+              <div className="setup-text">
+                <div className="setup-card-title">{title}</div>
+                <div className="setup-card-body">{body}</div>
+              </div>
+              <div className="setup-actions">
+                <button
+                  className={`setup-status pill ${state === "granted" ? "ok" : state === "denied" ? "no" : state === "skipped" ? "skip" : "ask"}`}
+                  onClick={() => ask(key)}
+                  disabled={pending[key]}
+                >
+                  {pending[key] ? "…" : statusLabel(state)}
+                </button>
+                {isAsk && (
+                  <button className="setup-skip" onClick={() => skip(key)}>skip</button>
+                )}
+                {!isAsk && (
+                  <button className="setup-skip" onClick={() => ask(key)}>change</button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="setup-weather">
+        {weather ? (
+          <>
+            <span className="w-icon" aria-hidden="true">{weather.icon}</span>
+            <span className="w-text">Stella sees the day: <b>{weather.tempC}°C · {weather.vibe}</b></span>
+          </>
+        ) : perms.location === "granted" ? (
+          <span className="w-text">Reading the sky for you…</span>
+        ) : (
+          <span className="w-text">She'll learn the day once you let her see where you are.</span>
+        )}
+      </div>
+
+      <button className="pill pill-primary setup-cta" onClick={onContinue}>
+        We're ready
+      </button>
+    </div>
+  );
+}
+
 /* ----------------------- AR view ----------------------- */
-function ARScreen({ variant, onExit, apiKey }) {
+function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
   const videoRef = useRef(null);
+  const ar3dRef = useRef(null);
   const [camState, setCamState] = useState("loading"); // loading | granted | denied | unsupported
   const [showPermAsk, setShowPermAsk] = useState(false);
   const [spotted, setSpotted] = useState(false);
-  const [lane, setLane] = useState(null); // null | find | talk | alone
-  const [suggestion, setSuggestion] = useState(null); // { text, loading }
-  const [tilt, setTilt] = useState({ x: 0, y: 0 });
+  const [spotConsumed, setSpotConsumed] = useState(false);
+  const [lane, setLane] = useState(null);
+  const [suggestion, setSuggestion] = useState(null);
   const [stellaCount] = useState(() => 3 + Math.floor(Math.random() * 5));
+  const [xrActive, setXrActive] = useState(false);
+  const [faceCount, setFaceCount] = useState(0);
+  const xrSupported = Sense.useWebXR();
+  const tilt = Sense.useOrientation(camState === "granted");
+
+  // Mount the cinematic AR layer (R3F + Pose Landmarker) over the video.
+  // When the URL contains ?ar3d=preview, mount even without camera so the scene
+  // can be reviewed in headless previews.
+  const ar3dPreview = typeof window !== "undefined" && /[?&]ar3d=preview/.test(window.location.search);
+  Sense.useAR3D({
+    containerRef: ar3dRef,
+    videoRef,
+    active: camState === "granted" || ar3dPreview,
+    bypassVideo: ar3dPreview,
+    mode: "companion",
+    variant,
+    spotted,
+    onPoseStable: () => {
+      setFaceCount((c) => Math.max(c, 1));
+      if (!spotConsumed) {
+        setSpotted(true);
+        setSpotConsumed(true);
+      }
+    },
+  });
 
   // Start camera
   const startCamera = useCallback(async () => {
     setCamState("loading");
     if (!navigator.mediaDevices?.getUserMedia) {
       setCamState("unsupported");
+      setPerm && setPerm("camera", "denied");
       return;
     }
     try {
@@ -179,14 +372,22 @@ function ARScreen({ variant, onExit, apiKey }) {
         await videoRef.current.play().catch(() => {});
       }
       setCamState("granted");
+      setPerm && setPerm("camera", "granted");
+      // iOS gyro permission must be triggered from a user gesture; the
+      // permission flow that led here is a gesture, so chain it.
+      Sense.requestMotion().then((r) => {
+        setPerm && setPerm("motion", r === "granted" ? "granted" : "denied");
+      });
     } catch (e) {
       console.warn("camera failed", e);
       setCamState("denied");
+      setPerm && setPerm("camera", "denied");
     }
-  }, []);
+  }, [setPerm]);
 
-  // Show permission ask card on mount; user taps to grant
   useEffect(() => {
+    // If user already granted camera in setup, ask again here so the prompt is
+    // sticky to the actual page that needs it (Safari requires user gesture).
     setShowPermAsk(true);
   }, []);
 
@@ -198,24 +399,9 @@ function ARScreen({ variant, onExit, apiKey }) {
     };
   }, []);
 
-  // Gyroscope tilt
-  useEffect(() => {
-    const onOri = (e) => {
-      // gamma = left/right [-90,90], beta = front/back [-180,180]
-      const g = (e.gamma || 0) / 90;
-      const b = ((e.beta || 0) - 60) / 90; // bias toward holding phone up
-      setTilt({
-        x: Math.max(-22, Math.min(22, g * 22)),
-        y: Math.max(-14, Math.min(14, b * 14)),
-      });
-    };
-    window.addEventListener("deviceorientation", onOri);
-    return () => window.removeEventListener("deviceorientation", onOri);
-  }, []);
-
-  // When user taps "Stella spotted them"
   const handleSpot = () => {
     setSpotted(true);
+    setSpotConsumed(true);
   };
 
   const handleCloseSheet = () => {
@@ -224,13 +410,11 @@ function ARScreen({ variant, onExit, apiKey }) {
     setSuggestion(null);
   };
 
-  // Open a lane → fetch suggestion
   const openLane = async (which) => {
     setLane(which);
     setSuggestion({ text: "", loading: true });
     try {
       const { text } = await askStella(which, apiKey);
-      // Strip any em dashes or formatting in case the model slipped
       const cleaned = (text || "")
         .replace(/[—–]/g, ",")
         .replace(/\*/g, "")
@@ -244,14 +428,19 @@ function ARScreen({ variant, onExit, apiKey }) {
 
   const tryAnother = () => openLane(lane);
 
-  const stellaMode = spotted && !suggestion ? "spotted" : lane === "alone" ? "reassuring" : lane ? "listening" : "idle";
+  const tryXR = async () => {
+    const session = await Sense.startImmersiveAR();
+    if (!session) return;
+    setXrActive(true);
+    session.addEventListener("end", () => setXrActive(false));
+  };
 
   return (
     <div className="screen ar-view" data-screen-label="03 AR Scanning">
-      {/* Camera or fallback */}
+      {/* Camera or fallback. In preview mode, leave the background dark so the cinematic Stella stands out. */}
       {camState === "granted" ? (
         <video ref={videoRef} className="ar-camera" playsInline muted autoPlay />
-      ) : (
+      ) : !ar3dPreview ? (
         <div className="ar-fallback-bg">
           <img
             src="assets/campus-map.png"
@@ -268,29 +457,34 @@ function ARScreen({ variant, onExit, apiKey }) {
             }}
           />
         </div>
+      ) : null}
+      {/* Cinematic AR canvas (R3F + Pose Landmarker) */}
+      {(camState === "granted" || ar3dPreview) && (
+        <div ref={ar3dRef} className="ar3d-stage" />
       )}
+
       <div className="ar-grain" />
       <div className="ar-vignette" />
 
-      {/* Stella overlay */}
-      <div
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: spotted ? "32%" : "44%",
-          transform: "translate(-50%, -50%)",
-          zIndex: 10,
-          transition: "top 0.5s ease",
-        }}
-      >
-        <Stella variant={variant} size={spotted ? 150 : 200} mode={stellaMode} tilt={tilt} />
-      </div>
+      {/* Static Stella fallback only when neither camera nor cinematic-preview path is active */}
+      {camState !== "granted" && !ar3dPreview && !showPermAsk && (
+        <div className="ar-stella-anchor" style={{ left: "50%", top: "44%" }}>
+          <Stella variant={variant} size={200} mode={lane === "alone" ? "reassuring" : "idle"} tilt={tilt} />
+        </div>
+      )}
 
       {/* Status pill */}
       {!showPermAsk && (
         <div className="ar-status">
           <span className="dot" />
           {spotted ? "Stella sees them" : "Stella is gently watching"}
+        </div>
+      )}
+
+      {/* Live status badge */}
+      {!showPermAsk && camState === "granted" && (
+        <div className="scan-badge" aria-live="polite">
+          {spotted ? "she sees them" : "she is looking, gently"}
         </div>
       )}
 
@@ -301,6 +495,13 @@ function ARScreen({ variant, onExit, apiKey }) {
             <IconClose />
           </button>
         </div>
+      )}
+
+      {/* WebXR pill — only when supported */}
+      {!showPermAsk && xrSupported && !xrActive && (
+        <button className="xr-pill" onClick={tryXR}>
+          ✦ Try depth AR
+        </button>
       )}
 
       {/* Ambient counter */}
@@ -334,6 +535,7 @@ function ARScreen({ variant, onExit, apiKey }) {
               onClick={() => {
                 setShowPermAsk(false);
                 setCamState("denied");
+                setPerm && setPerm("camera", "denied");
               }}
             >
               Not now
@@ -445,4 +647,5 @@ function ARScreen({ variant, onExit, apiKey }) {
 
 window.WelcomeScreen = WelcomeScreen;
 window.PickerScreen = PickerScreen;
+window.SetupScreen = SetupScreen;
 window.ARScreen = ARScreen;

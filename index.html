@@ -3,11 +3,36 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#D0F8FF" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <title>Stella — AR Companion</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://esm.sh" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Indie+Flower&family=Imprima&family=Patrick+Hand&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
+
+  <!-- ESM import map for the AR layer. The shell (welcome/picker/setup/home/...) stays on
+       UMD React via babel-standalone; the AR canvas runs in its own ESM tree to allow R3F. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+      "react-dom": "https://esm.sh/react-dom@18.3.1",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+      "three": "https://esm.sh/three@0.160.0",
+      "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.16?deps=react@18.3.1,react-dom@18.3.1,three@0.160.0",
+      "@react-three/drei": "https://esm.sh/@react-three/drei@9.92.7?deps=react@18.3.1,react-dom@18.3.1,three@0.160.0,@react-three/fiber@8.15.16",
+      "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.15.11?deps=react@18.3.1,three@0.160.0,@react-three/fiber@8.15.16",
+      "@mediapipe/tasks-vision": "https://esm.sh/@mediapipe/tasks-vision@0.10.9",
+      "htm": "https://esm.sh/htm@3.1.1"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="root"></div>
@@ -16,8 +41,15 @@
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
+  <!-- Cinematic AR layer (ESM). Exposes window.AR3D = { mountARScene, ready } and dispatches
+       'ar3d-ready' when its first import settles. Loaded async; the shell can mount before
+       it's ready and the AR screens will await window.AR3D.ready. -->
+  <script type="module" src="ar3d.module.js"></script>
+
   <script type="text/babel" src="stella.jsx"></script>
   <script type="text/babel" src="api.jsx"></script>
+  <script type="text/babel" src="sense.jsx"></script>
+  <script type="text/babel" src="weather.jsx"></script>
   <script type="text/babel" src="screens.jsx"></script>
   <script type="text/babel" src="hub.jsx"></script>
   <script type="text/babel" src="app.jsx"></script>

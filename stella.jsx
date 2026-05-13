@@ -45,10 +45,16 @@ function Stella({ variant = "blob", size = 180, mode = "idle", tilt = { x: 0, y:
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  const rotateX = tilt.rotateX || 0;
+  const rotateY = tilt.rotateY || 0;
+  const hasRotate = rotateX !== 0 || rotateY !== 0;
   const wrapStyle = {
     width: size,
     height: size,
-    transform: `translate(${tilt.x + drift.x}px, ${tilt.y + drift.y}px)`,
+    transform: hasRotate
+      ? `translate3d(${tilt.x + drift.x}px, ${tilt.y + drift.y}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`
+      : `translate(${tilt.x + drift.x}px, ${tilt.y + drift.y}px)`,
+    transformStyle: hasRotate ? "preserve-3d" : undefined,
     transition: "transform 0.18s ease-out",
     ...style,
   };
