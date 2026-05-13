@@ -433,6 +433,7 @@ function ARScene({ getState, mode, onPoseStable, onHaloClick }) {
       frameloop="always"
       gl=${{ alpha: true, antialias: true, preserveDrawingBuffer: true, powerPreference: "high-performance" }}
       style=${{ position: "absolute", inset: 0, background: "transparent", touchAction: "none" }}
+      onCreated=${({ gl }) => { gl.setClearColor(0x000000, 0); gl.setClearAlpha(0); }}
     >
       ${mode === "companion"
         ? html`<${CompanionScene} getState=${getState} onPoseStable=${onPoseStable} />`

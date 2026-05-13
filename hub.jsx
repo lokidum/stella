@@ -495,6 +495,10 @@ function FindUsersScreen({ variant, perms, setPerm, onBack, onChat }) {
     },
   });
 
+  // Stream is kept in state so the always-mounted <video> below can pick it up
+  // via a follow-up effect even when ref isn't ready inside start().
+  const [stream, setStream] = useState(null);
+
   const start = async () => {
     setPermState("loading");
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -503,13 +507,14 @@ function FindUsersScreen({ variant, perms, setPerm, onBack, onChat }) {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" } },
         audio: false,
       });
+      setStream(s);
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
+        videoRef.current.srcObject = s;
+        videoRef.current.play().catch(() => {});
       }
       setCamOn(true);
       setPermState("granted");
@@ -519,6 +524,17 @@ function FindUsersScreen({ variant, perms, setPerm, onBack, onChat }) {
       setPerm && setPerm("camera", "denied");
     }
   };
+
+  // Safety: re-attach the stream when the video element is (re-)mounted.
+  useEffect(() => {
+    if (!stream) return;
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.srcObject !== stream) {
+      v.srcObject = stream;
+      v.play().catch(() => {});
+    }
+  }, [stream, camOn]);
 
   useEffect(() => {
     return () => {
@@ -533,16 +549,17 @@ function FindUsersScreen({ variant, perms, setPerm, onBack, onChat }) {
 
   return (
     <div className="screen ar-view" data-screen-label="06 Find Stella Users">
-      {camOn ? (
-        <>
-          <video ref={videoRef} className="ar-camera" playsInline muted autoPlay />
-          <div ref={ar3dRef} className="ar3d-stage" />
-        </>
-      ) : ar3dPreview ? (
-        <div ref={ar3dRef} className="ar3d-stage" />
-      ) : (
-        <div className="ar-fallback-bg" />
-      )}
+      {/* Camera (always mounted so ref is populated before start() runs) */}
+      <video
+        ref={videoRef}
+        className="ar-camera"
+        playsInline
+        muted
+        autoPlay
+        style={{ display: camOn ? "block" : "none" }}
+      />
+      {(camOn || ar3dPreview) && <div ref={ar3dRef} className="ar3d-stage" />}
+      {!camOn && !ar3dPreview && <div className="ar-fallback-bg" />}
       <div className="ar-grain" />
       <div className="ar-vignette" />
 

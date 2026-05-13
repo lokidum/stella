@@ -354,6 +354,10 @@ function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
     },
   });
 
+  // Live stream — kept in state so the video element (rendered unconditionally)
+  // can pick it up via a follow-up effect even if the ref wasn't ready at grant time.
+  const [stream, setStream] = useState(null);
+
   // Start camera
   const startCamera = useCallback(async () => {
     setCamState("loading");
@@ -363,13 +367,16 @@ function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
+      setStream(s);
+      // The video element is always mounted; attach now and play. Effect below also
+      // re-attaches if React hasn't flushed yet.
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
+        videoRef.current.srcObject = s;
+        videoRef.current.play().catch(() => {});
       }
       setCamState("granted");
       setPerm && setPerm("camera", "granted");
@@ -384,6 +391,18 @@ function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
       setPerm && setPerm("camera", "denied");
     }
   }, [setPerm]);
+
+  // Safety: attach the stream once the video element is mounted, in case the ref
+  // wasn't ready inside startCamera (e.g. when toggling display:none → block).
+  useEffect(() => {
+    if (!stream) return;
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.srcObject !== stream) {
+      v.srcObject = stream;
+      v.play().catch(() => {});
+    }
+  }, [stream, camState]);
 
   useEffect(() => {
     // If user already granted camera in setup, ask again here so the prompt is
@@ -437,10 +456,18 @@ function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
 
   return (
     <div className="screen ar-view" data-screen-label="03 AR Scanning">
-      {/* Camera or fallback. In preview mode, leave the background dark so the cinematic Stella stands out. */}
-      {camState === "granted" ? (
-        <video ref={videoRef} className="ar-camera" playsInline muted autoPlay />
-      ) : !ar3dPreview ? (
+      {/* Camera (always mounted so the ref is populated before startCamera runs).
+          Hidden via CSS until camState === "granted" so the fallback / preview path looks right. */}
+      <video
+        ref={videoRef}
+        className="ar-camera"
+        playsInline
+        muted
+        autoPlay
+        style={{ display: camState === "granted" ? "block" : "none" }}
+      />
+      {/* Fallback campus-map background when no camera and not in preview mode */}
+      {camState !== "granted" && !ar3dPreview && (
         <div className="ar-fallback-bg">
           <img
             src="assets/campus-map.png"
@@ -457,7 +484,7 @@ function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
             }}
           />
         </div>
-      ) : null}
+      )}
       {/* Cinematic AR canvas (R3F + Pose Landmarker) */}
       {(camState === "granted" || ar3dPreview) && (
         <div ref={ar3dRef} className="ar3d-stage" />
