@@ -317,6 +317,33 @@ function SetupScreen({ variant, name, perms, setPerm, geo, setGeo, onContinue })
   );
 }
 
+/* ----------------------- Debug pill (opt-in via ?debug=1) ----------------------- */
+function ARDebugPill({ camState, stream, videoRef }) {
+  const enabled = typeof window !== "undefined" && /[?&]debug=1/.test(window.location.search);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const id = setInterval(() => setTick((t) => t + 1), 250);
+    return () => clearInterval(id);
+  }, [enabled]);
+  if (!enabled) return null;
+  const v = videoRef?.current;
+  const lines = [
+    `cam:${camState}`,
+    `stream:${stream ? "yes" : "no"}`,
+    `src:${v?.srcObject ? "yes" : "no"}`,
+    `vw:${v?.videoWidth || 0}x${v?.videoHeight || 0}`,
+    `ready:${v?.readyState ?? "—"}`,
+    `paused:${v?.paused ? 1 : 0}`,
+    `t:${tick}`,
+  ];
+  return (
+    <div className="ar-debug-pill" aria-hidden="true">
+      {lines.map((l, i) => <div key={i}>{l}</div>)}
+    </div>
+  );
+}
+
 /* ----------------------- AR view ----------------------- */
 function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
   const videoRef = useRef(null);
@@ -392,16 +419,34 @@ function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
     }
   }, [setPerm]);
 
-  // Safety: attach the stream once the video element is mounted, in case the ref
-  // wasn't ready inside startCamera (e.g. when toggling display:none → block).
+  // Safety + iOS Safari kick: re-attach the stream, force playback, and retry
+  // play() a few times. WebKit silently swallows the first .play() after a
+  // srcObject change when the element wasn't in layout flow yet.
   useEffect(() => {
     if (!stream) return;
     const v = videoRef.current;
     if (!v) return;
-    if (v.srcObject !== stream) {
-      v.srcObject = stream;
-      v.play().catch(() => {});
-    }
+    if (v.srcObject !== stream) v.srcObject = stream;
+    let cancelled = false;
+    let attempts = 0;
+    const kick = () => {
+      if (cancelled || !videoRef.current) return;
+      const vv = videoRef.current;
+      vv.muted = true;            // iOS autoplay requirement
+      vv.setAttribute("playsinline", "");
+      vv.setAttribute("webkit-playsinline", "");
+      const p = vv.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => {});
+      }
+      attempts++;
+      // Retry a handful of times if the video hasn't started yet (videoWidth 0).
+      if (attempts < 8 && (vv.videoWidth === 0 || vv.paused)) {
+        setTimeout(kick, 250);
+      }
+    };
+    kick();
+    return () => { cancelled = true; };
   }, [stream, camState]);
 
   useEffect(() => {
@@ -456,15 +501,22 @@ function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
 
   return (
     <div className="screen ar-view" data-screen-label="03 AR Scanning">
-      {/* Camera (always mounted so the ref is populated before startCamera runs).
-          Hidden via CSS until camState === "granted" so the fallback / preview path looks right. */}
+      {/* Camera — always mounted AND always in layout flow. iOS Safari tears down
+          the video plane when an element toggles display:none/block, so we toggle
+          opacity instead. The element keeps its size and the WebKit player stays
+          alive across permission state changes. */}
       <video
         ref={videoRef}
         className="ar-camera"
         playsInline
         muted
         autoPlay
-        style={{ display: camState === "granted" ? "block" : "none" }}
+        webkit-playsinline="true"
+        style={{
+          opacity: camState === "granted" ? 1 : 0,
+          pointerEvents: "none",
+          transition: "opacity 0.25s ease",
+        }}
       />
       {/* Fallback campus-map background when no camera and not in preview mode */}
       {camState !== "granted" && !ar3dPreview && (
@@ -492,6 +544,9 @@ function ARScreen({ variant, onExit, apiKey, perms, setPerm }) {
 
       <div className="ar-grain" />
       <div className="ar-vignette" />
+
+      {/* On-screen diagnostics for mobile debugging. Append ?debug=1 to the URL. */}
+      <ARDebugPill camState={camState} stream={stream} videoRef={videoRef} />
 
       {/* Static Stella fallback only when neither camera nor cinematic-preview path is active */}
       {camState !== "granted" && !ar3dPreview && !showPermAsk && (

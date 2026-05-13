@@ -525,15 +525,30 @@ function FindUsersScreen({ variant, perms, setPerm, onBack, onChat }) {
     }
   };
 
-  // Safety: re-attach the stream when the video element is (re-)mounted.
+  // Safety + iOS Safari kick: re-attach the stream and retry .play() until the
+  // video has dimensions. WebKit drops the first play() after a srcObject swap.
   useEffect(() => {
     if (!stream) return;
     const v = videoRef.current;
     if (!v) return;
-    if (v.srcObject !== stream) {
-      v.srcObject = stream;
-      v.play().catch(() => {});
-    }
+    if (v.srcObject !== stream) v.srcObject = stream;
+    let cancelled = false;
+    let attempts = 0;
+    const kick = () => {
+      if (cancelled || !videoRef.current) return;
+      const vv = videoRef.current;
+      vv.muted = true;
+      vv.setAttribute("playsinline", "");
+      vv.setAttribute("webkit-playsinline", "");
+      const p = vv.play();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+      attempts++;
+      if (attempts < 8 && (vv.videoWidth === 0 || vv.paused)) {
+        setTimeout(kick, 250);
+      }
+    };
+    kick();
+    return () => { cancelled = true; };
   }, [stream, camOn]);
 
   useEffect(() => {
@@ -549,14 +564,20 @@ function FindUsersScreen({ variant, perms, setPerm, onBack, onChat }) {
 
   return (
     <div className="screen ar-view" data-screen-label="06 Find Stella Users">
-      {/* Camera (always mounted so ref is populated before start() runs) */}
+      {/* Camera — always in layout flow; opacity-toggled to dodge iOS Safari's
+          display:none/block teardown of the video plane. */}
       <video
         ref={videoRef}
         className="ar-camera"
         playsInline
         muted
         autoPlay
-        style={{ display: camOn ? "block" : "none" }}
+        webkit-playsinline="true"
+        style={{
+          opacity: camOn ? 1 : 0,
+          pointerEvents: "none",
+          transition: "opacity 0.25s ease",
+        }}
       />
       {(camOn || ar3dPreview) && <div ref={ar3dRef} className="ar3d-stage" />}
       {!camOn && !ar3dPreview && <div className="ar-fallback-bg" />}
