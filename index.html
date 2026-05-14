@@ -41,10 +41,20 @@
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
+  <!-- Howler.js: audio engine for the persistent ambient background.
+       Plain <script> (not type=text/babel) so the global Howl/Howler are
+       available immediately for audio.js to wrap. -->
+  <script src="https://unpkg.com/howler@2.2.4/dist/howler.min.js"></script>
+
   <!-- Cinematic AR layer (ESM). Exposes window.AR3D = { mountARScene, ready } and dispatches
        'ar3d-ready' when its first import settles. Loaded async; the shell can mount before
        it's ready and the AR screens will await window.AR3D.ready. -->
   <script type="module" src="ar3d.module.js"></script>
+
+  <!-- Audio manager: plain <script>, runs once at page load, lives on
+       window.StellaAudio. Initialised lazily — no Howl instances are created
+       and no sound is fetched until the user explicitly triggers play(). -->
+  <script src="audio.js"></script>
 
   <script type="text/babel" src="stella.jsx"></script>
   <script type="text/babel" src="api.jsx"></script>

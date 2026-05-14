@@ -1077,6 +1077,34 @@ button {
   background: var(--sky-deep);
 }
 
+/* ---------- Zone tab "audio playing" indicator ---------- */
+.zone-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.zone-pulse {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5cd9a3;
+  box-shadow: 0 0 6px #5cd9a3, 0 0 12px rgba(92, 217, 163, 0.6);
+  animation: zone-pulse 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes zone-pulse {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.25); }
+}
+/* Slight tint on the icon when audio is playing, even on inactive tab. */
+.dock-item.zone-playing svg {
+  stroke: var(--sky-deep);
+}
+
 /* Center dock button (AR / camera) elevated */
 .dock-center {
   flex: 0 0 64px;
@@ -1515,6 +1543,16 @@ button {
   flex-shrink: 0;
 }
 .now-playing .album svg { width: 24px; height: 24px; stroke: var(--navy); }
+/* Subtle pulse on the album tile while audio is active. */
+.now-playing .album.playing {
+  box-shadow: 0 0 0 0 rgba(208, 248, 255, 0.55);
+  animation: now-playing-pulse 2.4s ease-out infinite;
+}
+@keyframes now-playing-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(208, 248, 255, 0.5); }
+  70%  { box-shadow: 0 0 0 14px rgba(208, 248, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(208, 248, 255, 0); }
+}
 .now-playing .meta { flex: 1; min-width: 0; }
 .now-playing .track {
   font-family: "Indie Flower", cursive;

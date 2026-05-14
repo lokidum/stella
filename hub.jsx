@@ -72,6 +72,14 @@ const IcEye = (p) => (
 
 /* ----------------------- Bottom dock ----------------------- */
 function Dock({ active, onNav, onAR }) {
+  // Subscribe to the global audio manager so the Zone tab can show a tiny
+  // glowing dot whenever ambient audio is playing in the background, no
+  // matter which screen we're on. The subscription itself is cheap and the
+  // dock is mounted on every screen that shows it.
+  const audio = useStellaAudio();
+  const zoneClass =
+    `dock-item ${active === "zone" ? "active" : ""} ${audio.isPlaying ? "zone-playing" : ""}`;
+
   return (
     <div className="dock">
       <button className={`dock-item ${active === "home" ? "active" : ""}`} onClick={() => onNav("home")}>
@@ -87,8 +95,12 @@ function Dock({ active, onNav, onAR }) {
       <button className={`dock-item ${active === "chat" ? "active" : ""}`} onClick={() => onNav("chat")}>
         <IcMsg /><span>Chat</span>
       </button>
-      <button className={`dock-item ${active === "zone" ? "active" : ""}`} onClick={() => onNav("zone")}>
-        <IcHeadphones /><span>Zone</span>
+      <button className={zoneClass} onClick={() => onNav("zone")}>
+        <span className="zone-icon-wrap">
+          <IcHeadphones />
+          {audio.isPlaying && <span className="zone-pulse" aria-hidden="true" />}
+        </span>
+        <span>Zone</span>
       </button>
     </div>
   );
@@ -239,23 +251,75 @@ function HomeScreen({ variant, name, status, setStatus, perms, geo, onNav, onAR,
 }
 
 /* ----------------------- Zone Out ----------------------- */
+// Curated picks from the audios/ folder. Eight calm instrumental tracks that
+// match Stella's tone. The src strings use the actual file names (encoded for
+// the spaces) and the StellaAudio manager loads them lazily on first play.
 const TRACKS = [
-  { id: "rain", name: "Rain on a tin roof", artist: "Ambient · Stella picks" },
-  { id: "library", name: "Library hum", artist: "Soft loop" },
-  { id: "river", name: "Brisbane river breeze", artist: "Outdoor textures" },
-  { id: "piano", name: "One-note piano", artist: "Slow keys" },
+  { id: "moonlight",   name: "Moonlight",       artist: "Stella picks", src: "audios/Moonlight.mp3" },
+  { id: "lunar-waves", name: "Lunar Waves",     artist: "Drifting",     src: "audios/Lunar%20Waves.mp3" },
+  { id: "hollow-river", name: "Hollow river",   artist: "Water · soft", src: "audios/hollow%20river.mp3" },
+  { id: "quiet-life",  name: "Quiet Life",      artist: "Sit a while",  src: "audios/Quiet%20Life.mp3" },
+  { id: "sunrise",     name: "Sunrise",         artist: "Gentle warm",  src: "audios/Sunrise.mp3" },
+  { id: "velvet",      name: "Velvet",          artist: "Soft loop",    src: "audios/Velvet.mp3" },
+  { id: "echo-branches", name: "Echo Branches", artist: "Outdoors",     src: "audios/Echo%20Branches.mp3" },
+  { id: "timeless",    name: "Timeless Space",  artist: "Drift",        src: "audios/Timeless%20Space.mp3" },
 ];
 
-const AMBIENTS = ["Rain", "Library hum", "River", "Crowd, faint", "Wind through trees", "Lo-fi", "Silence"];
+// Register the catalog with the global audio manager. Safe to call at module
+// load — StellaAudio doesn't fetch anything until play() is called.
+if (typeof window !== "undefined" && window.StellaAudio) {
+  window.StellaAudio.setTracks(TRACKS);
+}
+
+// Hook: subscribes a component to the global audio manager. Returns the live
+// state and re-renders whenever play/pause/track changes. The audio itself
+// keeps running across unmounts — only the subscription is component-scoped.
+function useStellaAudio() {
+  const [state, setState] = useState(() =>
+    typeof window !== "undefined" && window.StellaAudio
+      ? window.StellaAudio.getState()
+      : { trackId: null, isPlaying: false, volume: 0.7, loading: false }
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.StellaAudio) return;
+    const unsubscribe = window.StellaAudio.subscribe(setState);
+    return unsubscribe;
+  }, []);
+  return state;
+}
 
 function ZoneScreen({ variant, onBack }) {
-  const [playing, setPlaying] = useState(true);
-  const [track, setTrack] = useState(0);
+  const audio = useStellaAudio();
   const [noiseCancel, setNoiseCancel] = useState(true);
   const [stellaShield, setStellaShield] = useState(true);
-  const [ambient, setAmbient] = useState("Rain");
 
-  const t = TRACKS[track];
+  // The track shown in the "Now playing" card. Defaults to the first track
+  // before anything has been played. When something IS playing, mirror the
+  // global state so leaving and returning to this screen shows the right one.
+  const currentTrack =
+    TRACKS.find((t) => t.id === audio.trackId) || TRACKS[0];
+  const isPlaying = audio.isPlaying;
+
+  // Play/pause toggle. The first tap on this button is what unlocks the
+  // mobile browser's Web Audio API — Howler handles the unlock internally.
+  const togglePlay = useCallback(() => {
+    if (!window.StellaAudio) return;
+    if (isPlaying) {
+      window.StellaAudio.pause();
+    } else if (audio.trackId) {
+      window.StellaAudio.resume();
+    } else {
+      // Nothing's ever been played — start the default first track.
+      window.StellaAudio.play(currentTrack.id);
+    }
+  }, [isPlaying, audio.trackId, currentTrack.id]);
+
+  const pickTrack = useCallback((id) => {
+    if (!window.StellaAudio) return;
+    // Tapping a chip plays that track immediately (with crossfade if another
+    // is already playing). This also satisfies the first-tap audio unlock.
+    window.StellaAudio.play(id);
+  }, []);
 
   return (
     <div className="screen zone" data-screen-label="04 Zone Out">
@@ -280,24 +344,36 @@ function ZoneScreen({ variant, onBack }) {
 
         <div className="zone-controls">
           <div className="now-playing">
-            <div className="album"><IcHeadphones stroke={undefined} /></div>
-            <div className="meta">
-              <div className="track">{t.name}</div>
-              <div className="artist">{t.artist}</div>
+            <div className={`album ${isPlaying ? "playing" : ""}`}>
+              <IcHeadphones stroke={undefined} />
             </div>
-            <button className="play-btn" onClick={() => setPlaying((p) => !p)}>
-              {playing ? <IcPause /> : <IcPlay />}
+            <div className="meta">
+              <div className="track">{currentTrack.name}</div>
+              <div className="artist">
+                {audio.loading
+                  ? "loading…"
+                  : isPlaying
+                    ? currentTrack.artist
+                    : `${currentTrack.artist} · paused`}
+              </div>
+            </div>
+            <button
+              className="play-btn"
+              onClick={togglePlay}
+              aria-label={isPlaying ? "Pause" : "Play"}
+            >
+              {isPlaying ? <IcPause /> : <IcPlay />}
             </button>
           </div>
 
           <div className="ambient-list">
-            {AMBIENTS.map((a) => (
+            {TRACKS.map((t) => (
               <button
-                key={a}
-                className={`ambient-chip ${ambient === a ? "active" : ""}`}
-                onClick={() => setAmbient(a)}
+                key={t.id}
+                className={`ambient-chip ${audio.trackId === t.id ? "active" : ""}`}
+                onClick={() => pickTrack(t.id)}
               >
-                {a}
+                {t.name}
               </button>
             ))}
           </div>
