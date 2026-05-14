@@ -1451,7 +1451,11 @@ button {
   width: 100%;
   height: 100%;
   background: linear-gradient(180deg, #b8e2ff 0%, #6aa3d4 50%, #3a72a8 100%);
-  overflow: hidden;
+  /* Allow vertical scroll — with 8 ambient chips + the breath orb + now-playing
+     card + two toggle rows, content is taller than the viewport on most phones. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
 }
@@ -1460,12 +1464,14 @@ button {
 .zone .icon-btn svg { stroke: white; }
 
 .zone-body {
-  flex: 1;
+  flex: 1 0 auto;            /* grow with content; never shrink below intrinsic */
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 0 24px 90px;
+  /* When the content fits the viewport it sits nicely in the middle; when it
+     doesn't, it scrolls from the top instead of being clipped. */
+  justify-content: flex-start;
+  padding: 8px 24px calc(110px + env(safe-area-inset-bottom, 0px));
   position: relative;
   gap: 14px;
 }
