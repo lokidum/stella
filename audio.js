@@ -37,8 +37,22 @@
   let isPlaying = false;
   let volume = 0.7;
   let loading = false;
+  let lastError = null; // surfaced to the UI for visibility
   const listeners = new Set();
   const CROSSFADE_MS = 600;
+
+  // Mobile Chrome / iOS Safari sometimes leave Howler.ctx in 'suspended' state
+  // even after a user gesture. Resuming it explicitly on every play() is cheap
+  // and fixes the silent-playback case where everything looks correct in state
+  // but no sound reaches the speakers.
+  function resumeContext() {
+    try {
+      const Howler = window.Howler;
+      if (Howler && Howler.ctx && Howler.ctx.state === "suspended") {
+        Howler.ctx.resume().catch(() => {});
+      }
+    } catch {}
+  }
 
   // Restore last volume across sessions.
   try {
@@ -54,7 +68,7 @@
   }
 
   function getState() {
-    return { trackId: currentId, isPlaying, volume, loading };
+    return { trackId: currentId, isPlaying, volume, loading, error: lastError };
   }
 
   function ensureHowl(trackId) {
@@ -70,15 +84,37 @@
     }
     const howl = new Howl({
       src: [meta.src],
+      format: ["mp3"],   // explicit so Howler doesn't try to probe other codecs
       loop: true,
-      html5: false,      // Use Web Audio so we get smooth volume/fade control
+      // html5:true uses an HTMLAudioElement under the hood — streams instead
+      // of pre-decoding the whole file. Mandatory for reliable mobile-Chrome /
+      // iOS playback of longer music tracks (Howler docs recommend it for any
+      // track that streams or is more than a few seconds).
+      html5: true,
       preload: true,
-      volume: 0,         // start silent; we fade up to `volume` in play()
-      onloaderror: (id, err) => console.warn("Howl load failed:", meta.src, err),
+      volume: 0,
+      onloaderror: (id, err) => {
+        const msg = `couldn't load ${meta.name}`;
+        console.warn("Howl load failed:", meta.src, err);
+        lastError = msg;
+        loading = false;
+        notify();
+      },
       onplayerror: (id, err) => {
-        // Often a mobile-autoplay-policy block — recover by unlocking on user
-        // gesture. Since play() is always called from a tap, we just retry once.
-        howl.once("unlock", () => howl.play());
+        console.warn("Howl play failed:", meta.src, err);
+        // Howler emits 'unlock' once a real user gesture has unlocked the
+        // audio plane. We retry the play once that happens.
+        howl.once("unlock", () => {
+          lastError = null;
+          notify();
+          try { howl.play(); } catch {}
+        });
+        lastError = "tap play again to start sound";
+        notify();
+      },
+      onload: () => {
+        // File is ready — clear any stale error from a previous attempt.
+        if (lastError) { lastError = null; notify(); }
       },
     });
     howls[trackId] = howl;
@@ -99,6 +135,9 @@
   // ---------- public API ----------
 
   function play(trackId) {
+    // Resume audio context up front in case the browser left it suspended.
+    resumeContext();
+
     const next = ensureHowl(trackId);
     if (!next) return;
 
@@ -108,9 +147,12 @@
     currentId = trackId;
     isPlaying = true;
     loading = true;
+    lastError = null;
     notify();
 
-    // Start the new track muted, then crossfade up to target volume.
+    // Start the new track muted, then crossfade up to target volume. In html5
+    // mode we must call play() synchronously inside the user gesture handler,
+    // which is exactly how we get here (button onClick → StellaAudio.play).
     if (!next.playing()) {
       next.volume(0);
       next.play();
@@ -125,7 +167,6 @@
     if (prev && prev.playing()) {
       const prevVol = prev.volume();
       fadeTo(prev, prevVol, 0, CROSSFADE_MS).then(() => {
-        // Pause (don't stop) so a quick switch-back can resume instantly.
         prev.pause();
       });
     }
@@ -141,14 +182,15 @@
 
   function resume() {
     if (!currentId) return;
+    resumeContext();
     const howl = howls[currentId];
     if (!howl) return;
     if (!howl.playing()) {
-      // If volume was 0 (e.g. faded out), bring it back.
       howl.volume(volume);
       howl.play();
     }
     isPlaying = true;
+    lastError = null;
     notify();
   }
 

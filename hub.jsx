@@ -350,11 +350,13 @@ function ZoneScreen({ variant, onBack }) {
             <div className="meta">
               <div className="track">{currentTrack.name}</div>
               <div className="artist">
-                {audio.loading
-                  ? "loading…"
-                  : isPlaying
-                    ? currentTrack.artist
-                    : `${currentTrack.artist} · paused`}
+                {audio.error
+                  ? `⚠ ${audio.error}`
+                  : audio.loading
+                    ? "loading…"
+                    : isPlaying
+                      ? currentTrack.artist
+                      : `${currentTrack.artist} · paused`}
               </div>
             </div>
             <button
