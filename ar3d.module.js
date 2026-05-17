@@ -207,9 +207,11 @@ function summarizePose(landmarks, vw, vh, aspect) {
 // Calibrated for our perspective camera (position [0,0,2.2], fov 50) whose
 // visible Y range at z=0 is roughly [-1.025, +1.025].
 const SAFE_ZONE = {
-  groundY: 0.0,   // feet plane for Pip / Mochi (screen vertical centre)
-  airY: 0.45,     // Wisp's float baseline — well above the sheet
-  boundX: 0.7,    // ±this * aspect for horizontal free-roam / curiosity walks
+  groundY: 0.0,     // feet plane for Pip / Mochi (screen vertical centre)
+  airY: 0.45,       // Wisp's float baseline — well above the sheet
+  boundX: 0.7,      // ±this * aspect — wide bound for the spotted-state span
+  restX: 0.45,      // free-roam X centre (positive = right side of the screen)
+  restWander: 0.12, // half-amplitude of wander around restX (small breathing room)
 };
 
 /* ---------------- Character anchor + curiosity hooks ---------------- */
@@ -240,9 +242,14 @@ function useCharacterAnchor(anchorRef, role, aspect, options = {}) {
     } else {
       // FREE ROAM
       if (role === "air") {
+        // Wisp drifts in a tiny figure-8 around the RIGHT side of the safe
+        // zone, still at airY (he's a ghost — he floats above head height,
+        // not on the ground).
         const ax = aspect.current || 1;
-        targetRef.current.x = SAFE_ZONE.boundX * 0.65 * Math.sin(t * 0.45) * ax;
-        targetRef.current.y = SAFE_ZONE.airY + 0.08 * Math.cos(t * 0.72);
+        const restCenter = SAFE_ZONE.restX * ax;
+        const restAmp = SAFE_ZONE.restWander * ax;
+        targetRef.current.x = restCenter + restAmp * Math.sin(t * 0.45);
+        targetRef.current.y = SAFE_ZONE.airY + 0.06 * Math.cos(t * 0.72);
       } else {
         // Ground character drives its own x via wandering / pacing logic.
         // We only publish the floor y so they sit at the safe ground plane.
@@ -257,14 +264,21 @@ function useCharacterAnchor(anchorRef, role, aspect, options = {}) {
 
 // Returns a ref to the current curiosity point (x in world units).
 // Repicks every random(intervalRange[0], intervalRange[1]) seconds.
-function useCuriosityPoint(active, getBounds, intervalRange = [4, 8]) {
-  const pointRef = useRef({ x: 0, lastChange: performance.now(), nextIn: 4 + Math.random() * 4 });
+// `getCenter` returns the X around which curiosity points cluster; `getAmp`
+// returns the half-amplitude. The picked X is `center ± random(0..amp)`.
+function useCuriosityPoint(active, getCenter, getAmp, intervalRange = [4, 8]) {
+  const pointRef = useRef({
+    x: getCenter ? getCenter() : 0,
+    lastChange: performance.now(),
+    nextIn: 4 + Math.random() * 4,
+  });
   useFrame(() => {
     if (!active) return;
     const now = performance.now();
     if ((now - pointRef.current.lastChange) / 1000 >= pointRef.current.nextIn) {
-      const b = getBounds();
-      pointRef.current.x = (Math.random() * 2 - 1) * b;
+      const center = getCenter ? getCenter() : 0;
+      const amp = getAmp ? getAmp() : 0.5;
+      pointRef.current.x = center + (Math.random() * 2 - 1) * amp;
       pointRef.current.lastChange = now;
       pointRef.current.nextIn = intervalRange[0] + Math.random() * (intervalRange[1] - intervalRange[0]);
     }
@@ -373,40 +387,38 @@ function Wisp({ anchor, aspect }) {
       wispRef.current.scale.z = 1 + breathe * 0.04;
     }
 
-    // Track per-frame X velocity for the Z-tilt lean. Position-facing is
-    // handled by lookAt below, so we don't touch rotation.y manually anymore.
+    // Velocity tracking kept for the trail dynamics. We no longer apply any
+    // tilt to the body — on a round, symmetric ghost the oscillating Z-lean
+    // from the figure-8 path read as a spinning propeller and hid her face.
     const dx = g.position.x - lastXRef.current;
     lastXRef.current = g.position.x;
     facingVxRef.current = facingVxRef.current * 0.8 + dx * 0.2;
 
-    // Full billboard: pivot Y so the model's native +Z (where these specific
-    // Tripo3D GLBs export their face) points at the camera in the XZ plane.
-    // We avoid lookAt because lookAt assumes -Z forward and adds X-tilt for
-    // vertical offset that we'd just have to zero out.
+    // Pure-Y billboard: rotate Wisp so her face (+Z natively on these GLBs)
+    // points directly at the camera. Drift alone conveys motion.
     const dxToCam = camera.position.x - g.position.x;
     const dzToCam = camera.position.z - g.position.z;
     g.rotation.y = Math.atan2(dxToCam, dzToCam);
-    // Lean into motion (Z tilt) — applied AFTER the Y rotation.
-    g.rotation.z = THREE.MathUtils.clamp(-facingVxRef.current * 12, -0.35, 0.35);
-    // Lock X so she stays upright on tilted phones.
     g.rotation.x = 0;
+    g.rotation.z = 0;
   });
 
   if (!scene) return null;
-  // The primitive's +π/2 Y offset compensates for AI-generated GLBs that face
-  // down the +X axis. After lookAt orients the wrapper toward the camera, this
-  // offset puts the model's actual face in line with that orientation.
+  // ghost.glb exports with face along +X. We rotate -π/2 around Y so the face
+  // ends up along the wrapper's +Z, which is the axis my billboard math points
+  // at the camera. (Verified by sweeping rotation values until both eyes
+  // appeared — face was at +X, not the +Z that Mochi uses.)
   return html`
     <group ref=${groupRef}>
       <${Trail}
-        width=${0.4}
-        length=${5}
-        decay=${1.1}
-        color=${new THREE.Color("#a8e8ff")}
-        attenuation=${(t) => t * t}
+        width=${0.15}
+        length=${6}
+        decay=${1.6}
+        color=${new THREE.Color("#cfe9ee")}
+        attenuation=${(t) => t * t * t}
       >
         <group ref=${wispRef}>
-          <primitive object=${scene} />
+          <primitive object=${scene} rotation=${[0, -Math.PI / 2, 0]} />
         </group>
       </${Trail}>
     </group>
@@ -430,12 +442,19 @@ function Pip({ anchor, aspect }) {
 
   // Bounce state — period 0.9s; height 0.18
   const phaseRef = useRef(Math.random() * Math.PI * 2);
+  const prevSinRef = useRef(0);
   const lastImpactRef = useRef(performance.now() / 1000);
   const [marks, setMarks] = useState([]);
 
-  // Curiosity walk (free-roam target X) — bounded by the safe-zone width so
-  // Pip never wanders into the area that the bottom sheet covers.
-  const curiosity = useCuriosityPoint(true, () => SAFE_ZONE.boundX * (aspect.current || 1), [4, 8]);
+  // Curiosity walk — when no pose is detected, Pip wanders within a small
+  // box on the RIGHT side of the safe zone. Spotted-event centering still
+  // overrides this via desiredX = tgt.x = 0 a few lines below.
+  const curiosity = useCuriosityPoint(
+    true,
+    () => SAFE_ZONE.restX * (aspect.current || 1),
+    () => SAFE_ZONE.restWander * (aspect.current || 1),
+    [4, 8]
+  );
 
   useFrame((_, delta) => {
     const g = groupRef.current;
@@ -455,39 +474,41 @@ function Pip({ anchor, aspect }) {
       g.position.x += dxToTarget * kx;
     }
 
-    // Bounce: pulse phase forward. Period scales slightly with travel speed.
+    // Bounce phase advances continuously. We use abs(sin) for height so Pip
+    // bounces TWICE per phase period (impact at sin=0 → apex at sin=±1 → impact
+    // again at sin=0). That eliminates the half-cycle of "sitting flat" we had
+    // before, which was the cause of him appearing stuck-squished.
     phaseRef.current += delta * (2 * Math.PI / 0.9);
     if (phaseRef.current > Math.PI * 2) phaseRef.current -= Math.PI * 2;
 
-    // Height: 0 at phase 0/2π (impact), max at π (apex).
-    const heightPct = Math.max(0, Math.sin(phaseRef.current));
-    const bounceY = heightPct * 0.18;
-    g.position.y = ground + bounceY;
+    const phaseSin = Math.sin(phaseRef.current);
+    const heightPct = Math.abs(phaseSin); // 0 = on ground, 1 = apex
+    g.position.y = ground + heightPct * 0.18;
 
-    // Detect impact (phase crossed 2π back to 0)
-    const impacted = phaseRef.current < 0.1 && (t - lastImpactRef.current) > 0.6;
-    if (impacted) {
+    // Impact = sin just crossed zero (ground contact). Cooldown prevents
+    // double-firing within a single physical impact.
+    const crossedZero = prevSinRef.current * phaseSin < 0;
+    prevSinRef.current = phaseSin;
+    if (crossedZero && (t - lastImpactRef.current) > 0.25) {
       lastImpactRef.current = t;
       const id = `${t}-${Math.random().toString(36).slice(2, 6)}`;
-      // Replace any existing mark with the new one — only one visible at a time.
       setMarks([{ id, x: g.position.x, y: ground, birth: performance.now() }]);
     }
 
-    // Squash & stretch — inner mesh so the outer billboard rotation isn't
-    // distorted by per-frame scale changes.
+    // Squash & stretch — kept GENTLE so Pip's eyes never disappear into the
+    // silhouette. Squash applies only in a narrow window near the ground
+    // (heightPct < 0.12), and returns smoothly to neutral as he leaves it.
     if (meshRef.current) {
-      if (heightPct < 0.05) {
-        // Impact frame — squash
-        const u = 1 - heightPct / 0.05;
-        meshRef.current.scale.x = 1 + 0.25 * u;
-        meshRef.current.scale.y = 1 - 0.30 * u;
-        meshRef.current.scale.z = 1 + 0.25 * u;
+      if (heightPct < 0.12) {
+        const u = 1 - heightPct / 0.12; // 1 at ground, 0 at edge of window
+        meshRef.current.scale.x = 1 + 0.12 * u;
+        meshRef.current.scale.y = 1 - 0.15 * u;
+        meshRef.current.scale.z = 1 + 0.12 * u;
       } else {
-        // Airborne — stretch
-        const u = heightPct;
-        meshRef.current.scale.x = 0.92 - 0.05 * u;
-        meshRef.current.scale.y = 1.10 + 0.10 * u;
-        meshRef.current.scale.z = 0.92 - 0.05 * u;
+        const u = (heightPct - 0.12) / 0.88; // 0 just above ground → 1 at apex
+        meshRef.current.scale.x = 1 - 0.04 * u;
+        meshRef.current.scale.y = 1 + 0.06 * u;
+        meshRef.current.scale.z = 1 - 0.04 * u;
       }
     }
 
@@ -501,11 +522,14 @@ function Pip({ anchor, aspect }) {
   });
 
   if (!scene) return null;
+  // blob.glb exports with face along +X (same as ghost.glb). Rotate the
+  // primitive -π/2 around Y so the face aligns with the wrapper's +Z, which
+  // is what my billboard math points at the camera.
   return html`
     <group>
       <group ref=${groupRef}>
         <group ref=${meshRef}>
-          <primitive object=${scene} />
+          <primitive object=${scene} rotation=${[0, -Math.PI / 2, 0]} />
         </group>
       </group>
       ${marks.map((m) => html`<${BounceMark} key=${m.id} x=${m.x} y=${m.y} birth=${m.birth} />`)}
@@ -529,9 +553,6 @@ function Mochi({ anchor, aspect }) {
   const [footprints, setFootprints] = useState([]);
   const walkPhaseRef = useRef(0);
   const lastSideRef = useRef("R");
-  const idleDirRef = useRef(1);
-  // Blend between "rest" (1, lookAt camera) and "walking" (0, profile).
-  const restingBlend = useRef(1);
 
   // Seed initial position on the safe-zone ground plane.
   useEffect(() => {
@@ -547,14 +568,15 @@ function Mochi({ anchor, aspect }) {
     g.position.y = ground;
 
     // X target: when spotted Mochi heads to centre (anchor publishes x=0);
-    // otherwise he paces gently across the safe zone.
+    // otherwise he paces gently within a small box on the right side of the
+    // safe zone. No more left/right pole flipping — he stays right-aligned.
     let desiredX;
     if (tgt.hasPose) {
       desiredX = tgt.x; // = 0 (anchor centres on spotted)
     } else {
-      const span = SAFE_ZONE.boundX * (aspect.current || 1);
-      desiredX = idleDirRef.current * span * (0.4 + 0.5 * Math.sin(t * 0.3));
-      if (Math.random() < 0.001) idleDirRef.current *= -1;
+      const restCenter = SAFE_ZONE.restX * (aspect.current || 1);
+      const restAmp = SAFE_ZONE.restWander * (aspect.current || 1);
+      desiredX = restCenter + restAmp * Math.sin(t * 0.3);
     }
     const dx = desiredX - g.position.x;
 
@@ -581,29 +603,14 @@ function Mochi({ anchor, aspect }) {
       meshRef.current.rotation.x = -THREE.MathUtils.clamp(speed * 0.4, 0, 0.25);
     }
 
-    // ---- Hybrid Y facing ----
-    // These specific Tripo3D GLBs export face along +Z (verified empirically
-    // — rotation.y = π shows the back). camYaw rotates so +Z points at the
-    // camera in the XZ plane.
+    // ---- Always face camera ----
+    // Mochi NEVER turns away. His eyes always read as looking at the user,
+    // even while waddling toward a destination. The waddle (rotation.z on the
+    // inner mesh, applied above) and the X-translation still convey "he's
+    // walking somewhere" without ever showing his side or back.
     const dxToCam = camera.position.x - g.position.x;
     const dzToCam = camera.position.z - g.position.z;
-    const camYaw = Math.atan2(dxToCam, dzToCam);
-    // Walking yaw: profile toward +X (right) means +Z should point +X → +π/2.
-    // Toward -X (left) → -π/2.
-    const walkYaw = dx > 0 ? Math.PI / 2 : -Math.PI / 2;
-
-    // Smoothly blend rest ↔ walking based on actual speed.
-    const targetBlend = Math.abs(dx) < 0.01 ? 1 : 0;
-    restingBlend.current += (targetBlend - restingBlend.current) * (1 - Math.exp(-delta * 2.5));
-    const blend = restingBlend.current;
-
-    // Lerp current Y toward the blended target (angle-aware via shortest arc).
-    const targetYaw = blend * camYaw + (1 - blend) * walkYaw;
-    let diff = targetYaw - g.rotation.y;
-    while (diff > Math.PI) diff -= 2 * Math.PI;
-    while (diff < -Math.PI) diff += 2 * Math.PI;
-    g.rotation.y += diff * (1 - Math.exp(-delta * 3.5));
-    // Lock X / Z so Mochi never tips over on tilted phones.
+    g.rotation.y = Math.atan2(dxToCam, dzToCam);
     g.rotation.x = 0;
     g.rotation.z = 0;
 
@@ -635,14 +642,14 @@ function Mochi({ anchor, aspect }) {
   }, []);
 
   if (!scene) return null;
-  // Primitive +π/2 offset compensates for AI-generated GLBs that face +X by
-  // default. Combined with lookAt/walkYaw on the wrapper, this puts Mochi's
-  // actual face along the intended direction.
+  // bear.glb (like blob.glb and ghost.glb) exports with face along +X.
+  // Rotate the primitive -π/2 around Y so the face ends up at +Z, which is
+  // the axis my billboard math points at the camera.
   return html`
     <group>
       <group ref=${groupRef}>
         <group ref=${meshRef}>
-          <primitive object=${scene} />
+          <primitive object=${scene} rotation=${[0, -Math.PI / 2, 0]} />
         </group>
       </group>
       ${footprints.map((f) => html`
